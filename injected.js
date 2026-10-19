@@ -613,8 +613,7 @@
         isUnsentFlag1 ||
         isUnsentFlag2 ||
         (unsentTsStr && unsentTsStr !== '0') ||
-        (rawText && isUnsendNoticeText(rawText)) ||
-        (capturedMessages.has(resolvedId) && (rawText === undefined || rawText === null || rawText === ''));
+        (rawText && isUnsendNoticeText(rawText));
 
       // Nếu là sự kiện thu hồi/xóa tin nhắn -> Kích hoạt ngay (nếu tin nhắn đã được bắt trước đó)
       if (isUnsent) {
@@ -651,7 +650,6 @@
     let mediaUrls = [];
     let timestamps = [];
     let hasUnsendNotice = false;
-    let hasNullTextAfterExisting = false;
 
     const allItems = [...args];
     if (returnValue !== undefined && returnValue !== null) {
@@ -661,7 +659,6 @@
     for (let i = 0; i < allItems.length; i++) {
       const arg = allItems[i];
       if (arg === null || arg === undefined) {
-        hasNullTextAfterExisting = true;
         continue;
       }
 
@@ -726,22 +723,13 @@
       const resolvedId = resolveCanonicalMessageId(primaryId);
       const bestTimestamp = timestamps.length > 0 ? Math.min(...timestamps) : null;
 
+      // Lưu ý: Không đưa DeleteThenInsertMessage vào đây vì đó là hàm cập nhật tin nhắn thường
       const isUnsendProcedure =
-        /MarkMessageUnsent|HandleUnsendMessage|DeleteMessage|Unsend|Revoke|Tombstone/i.test(
+        /^(LSMarkMessageUnsent|LSHandleUnsendMessage|LSDeleteMessage|LSDeleteMessageRequest)(\.|$)/i.test(
           moduleName
         );
-      const isDeleteThenInsert = /DeleteThenInsertMessage|UpsertMessage|UpdateMessage/i.test(
-        moduleName
-      );
 
       if (isUnsendProcedure || hasUnsendNotice) {
-        triggerMessageUnsent(resolvedId, { source: `module:${moduleName}` });
-      } else if (
-        isDeleteThenInsert &&
-        capturedMessages.has(resolvedId) &&
-        texts.length === 0 &&
-        hasNullTextAfterExisting
-      ) {
         triggerMessageUnsent(resolvedId, { source: `module:${moduleName}` });
       } else if (texts.length > 0 || mediaUrls.length > 0) {
         if (!bestTimestamp || isOldHistoricalTimestamp(bestTimestamp)) return;
@@ -1014,8 +1002,9 @@
         const threadId = ids[0] || '';
         const senderId = ids[1] || ids[0] || '';
 
+        // TUYỆT ĐỐI KHÔNG đưa deleteThenInsertMessage vào đây vì đó là hàm upsert tin nhắn thường trên Lightspeed!
         const isExplicitUnsendFunc =
-          /deleteThenInsertMessage|markMessageUnsent|handleUnsendMessage|deleteMessage|unsent|retract|recall|tombstone/i.test(
+          /^(markMessageUnsent|handleUnsendMessage|deleteMessage|retractMessage|recallMessage)$/i.test(
             currentFunc
           );
 
@@ -1199,14 +1188,6 @@
               timestamp,
               source: context.source
             });
-          } else if (
-            capturedMessages.has(resolveCanonicalMessageId(msgId)) &&
-            (textContent === '' || textContent === null || textContent === undefined) &&
-            (Object.prototype.hasOwnProperty.call(obj, 'text') ||
-              Object.prototype.hasOwnProperty.call(obj, 'body') ||
-              Object.prototype.hasOwnProperty.call(obj, 'plaintext'))
-          ) {
-            triggerMessageUnsent(msgId, { senderId, threadId, senderName, source: context.source });
           }
         }
       }
@@ -1312,7 +1293,6 @@
   if (window.IDBObjectStore) {
     const origPut = IDBObjectStore.prototype.put;
     const origAdd = IDBObjectStore.prototype.add;
-    const origDelete = IDBObjectStore.prototype.delete;
 
     IDBObjectStore.prototype.put = function (value, key) {
       const storeName = this.name || 'unknown';
@@ -1348,22 +1328,6 @@
         }
       } catch (_) {}
       return origAdd.apply(this, arguments);
-    };
-
-    IDBObjectStore.prototype.delete = function (key) {
-      const storeName = this.name || 'unknown';
-      try {
-        if (key !== undefined && key !== null) {
-          const strKey = Array.isArray(key) ? String(key[0]) : String(key);
-          const resolved = resolveCanonicalMessageId(strKey);
-          if (capturedMessages.has(resolved)) {
-            queueMicrotask(() => {
-              triggerMessageUnsent(resolved, { source: `idb-delete:${storeName}` });
-            });
-          }
-        }
-      } catch (_) {}
-      return origDelete.apply(this, arguments);
     };
   }
 
