@@ -356,7 +356,15 @@
     const existing = capturedMessages.get(messageId);
     if (!cleanText && cleanAttachments.length === 0) return;
 
-    const finalText = existing?.text ? existing.text : cleanText;
+    // Ưu tiên văn bản chính thức từ args[0] của module LSUpsertMessage/LSDeleteThenInsertMessage
+    const isAuthoritativeModule =
+      typeof source === 'string' && /^module:LS(Upsert|DeleteThenInsert|Insert)Message/i.test(source);
+    const finalText =
+      isAuthoritativeModule && cleanText
+        ? cleanText
+        : existing?.text
+          ? existing.text
+          : cleanText;
     const mergedAttachments = [...(existing?.attachments || [])];
     for (const url of cleanAttachments) {
       if (!mergedAttachments.includes(url)) {
@@ -376,6 +384,7 @@
     const isActuallyNew =
       !existing ||
       (!existing.text && finalText) ||
+      (isAuthoritativeModule && cleanText && existing.text !== finalText) ||
       mergedAttachments.length > (existing.attachments?.length || 0);
 
     const updatedRecord = {
@@ -387,7 +396,7 @@
       personName: resolvedNames.personName || existing?.personName || '',
       threadName: resolvedNames.threadName || existing?.threadName || '',
       attachments: mergedAttachments,
-      timestamp: timestamp || existing?.timestamp || Date.now(),
+      timestamp: existing?.timestamp || timestamp || Date.now(),
       capturedAt: existing?.capturedAt || Date.now(),
       source: source || existing?.source || 'internal',
       isUnsent: existing?.isUnsent || false
@@ -570,15 +579,12 @@
       return;
     }
 
-    // A2. Xử lý chuyên biệt cấu trúc 81-83 tham số của LSUpsertMessage & LSDeleteThenInsertMessage
+    // A2. Xử lý chuyên biệt cấu trúc tham số của LSUpsertMessage & LSDeleteThenInsertMessage
     if (/^(LSUpsertMessage|LSDeleteThenInsertMessage)(\.|$)/i.test(moduleName) && args.length >= 18) {
       const rawText = typeof args[0] === 'string' ? unvaultString(args[0]) : undefined;
       const msgId = typeof args[8] === 'string' ? unvaultString(args[8]).trim() : '';
       const otid = typeof args[9] === 'string' ? unvaultString(args[9]).trim() : '';
       const isAdminMessage = args[12] === true;
-      const isUnsentFlag1 = args[17] === true;
-      const unsentTsStr = parseLSInt64(args[18]);
-      const isUnsentFlag2 = args.length > 43 && args[43] === true;
 
       // Bỏ qua thông báo hệ thống của nhóm (rời nhóm, vào nhóm, đổi tên...)
       if (isAdminMessage) return;
@@ -609,17 +615,15 @@
       const senderId = explicitSenderId || validIds[1] || validIds[0] || '';
 
       const resolvedId = resolveCanonicalMessageId(msgId);
-      const isUnsent =
-        isUnsentFlag1 ||
-        isUnsentFlag2 ||
-        (unsentTsStr && unsentTsStr !== '0') ||
-        (rawText && isUnsendNoticeText(rawText));
+      // CHỈ coi là thu hồi khi rawText (args[0]) thực sự là chuỗi thông báo thu hồi/xóa tin nhắn
+      // (Tuyệt đối không dùng args[17]/args[18]/args[43] vì tin nhắn thường cũng bật các cờ này!)
+      const isUnsent = Boolean(rawText && isUnsendNoticeText(rawText));
 
-      // Nếu là sự kiện thu hồi/xóa tin nhắn -> Kích hoạt ngay (nếu tin nhắn đã được bắt trước đó)
       if (isUnsent) {
         triggerMessageUnsent(resolvedId, {
           threadId,
           senderId,
+          unsendNotice: rawText,
           source: `module:${moduleName}`
         });
         return;
@@ -1007,6 +1011,10 @@
           /^(markMessageUnsent|handleUnsendMessage|deleteMessage|retractMessage|recallMessage)$/i.test(
             currentFunc
           );
+        const isExplicitInsertMsgFunc =
+          /^(insertMessage|upsertMessage|deleteThenInsertMessage|replaceOptimisticMessage|MAWThreadSnippetForTextMsg)$/i.test(
+            currentFunc
+          );
 
         const resolvedId = resolveCanonicalMessageId(primaryId);
 
@@ -1016,12 +1024,15 @@
             senderId,
             source: context.source
           });
-        } else if (directTextLiterals.length > 0 || directMediaUrls.length > 0) {
+        } else if (
+          (isExplicitInsertMsgFunc && directTextLiterals.length > 0) ||
+          directMediaUrls.length > 0
+        ) {
           if (!timestamp || isOldHistoricalTimestamp(timestamp)) return;
           registerCapturedMessage({
             messageId: primaryId,
             altIds: allIds,
-            text: directTextLiterals[0] || '',
+            text: isExplicitInsertMsgFunc ? directTextLiterals[0] || '' : '',
             senderId,
             threadId,
             attachments: directMediaUrls,
@@ -1153,7 +1164,6 @@
             obj.type === 'unsent' ||
             (typeof obj.unsentTimestampMs === 'number' && obj.unsentTimestampMs > 0) ||
             (unsentTsParsed && unsentTsParsed !== '0') ||
-            obj.messageRenderingType === 2 ||
             (typeof textContent === 'string' && isUnsendNoticeText(textContent));
 
           if (isUnsentFlag) {
@@ -1334,8 +1344,11 @@
   // ============================================================================
   // 6. QUÉT CHỈ ĐỌC REACT FIBER TRÊN DÒNG CHAT ĐỂ LẤY MESSAGE ID (HỖ TRỢ KHÔI PHỤC SAU KHI F5)
   // ============================================================================
-  function extractMsgIdFromProps(props, depth = 0) {
+  function extractMsgIdFromProps(props, depth = 0, seen = new WeakSet()) {
     if (!props || typeof props !== 'object' || depth > 3) return '';
+    if (seen.has(props)) return '';
+    seen.add(props);
+
     const directCandidates = [
       props.messageId,
       props.message_id,
@@ -1361,19 +1374,47 @@
         }
       }
     }
+
+    // Quét đệ quy các trường con trong memoizedProps để tìm chuỗi mid.$ / otid.
+    const keys = Object.keys(props);
+    for (let i = 0; i < Math.min(keys.length, 25); i++) {
+      const k = keys[i];
+      if (k === 'children' || k.startsWith('_') || k.startsWith('$$')) continue;
+      let val;
+      try {
+        val = props[k];
+      } catch (_) {
+        continue;
+      }
+      if (typeof val === 'string') {
+        const clean = unvaultString(val).trim();
+        if (
+          clean.startsWith('mid.$') ||
+          clean.startsWith('wmid.') ||
+          clean.startsWith('otid.') ||
+          clean.startsWith('ee.mid.$')
+        ) {
+          return clean.replace(/^ee\./, '');
+        }
+      } else if (val && typeof val === 'object' && !(val instanceof Node)) {
+        const nested = extractMsgIdFromProps(val, depth + 1, seen);
+        if (nested) return nested;
+      }
+    }
     return '';
   }
 
   function findFiberMessageIdForRow(rowEl) {
     if (!rowEl || !(rowEl instanceof HTMLElement)) return '';
-    const elementsToCheck = [rowEl, ...Array.from(rowEl.querySelectorAll('div, span')).slice(0, 18)];
+    const priorityNodes = Array.from(rowEl.querySelectorAll('div[dir="auto"], span, div'));
+    const elementsToCheck = [rowEl, ...priorityNodes.slice(0, 40)];
     for (const el of elementsToCheck) {
       const fiberKey = Object.keys(el).find(
         (k) => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')
       );
       if (!fiberKey) continue;
       let curr = el[fiberKey];
-      for (let step = 0; step < 14 && curr; step++) {
+      for (let step = 0; step < 16 && curr; step++) {
         if (typeof curr.key === 'string') {
           const cleanKey = unvaultString(curr.key).trim();
           if (
