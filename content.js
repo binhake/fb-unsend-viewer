@@ -133,6 +133,28 @@
     saveToStorage();
   }
 
+  function notifyUnreadBadge() {
+    try {
+      if (chrome?.runtime?.sendMessage) {
+        chrome.runtime.sendMessage({ type: 'INCREMENT_UNREAD_BADGE' });
+      }
+    } catch (_) {}
+  }
+
+  function extractNameFromNotice(noticeText) {
+    if (!noticeText || typeof noticeText !== 'string') return '';
+    const cleaned = noticeText
+      .replace(
+        /\s*(đã xóa một tin nhắn|đã xoá một tin nhắn|đã thu hồi một tin nhắn|đã gỡ một tin nhắn|unsent a message|deleted a message|removed a message).*$/i,
+        ''
+      )
+      .trim();
+    if (cleaned && cleaned.length < 50 && !/^(bạn|you|tin nhắn|message)$/i.test(cleaned)) {
+      return cleaned;
+    }
+    return '';
+  }
+
   function handleUnsentEvent(unsentData) {
     const existing = messagesById.get(unsentData.messageId);
     const originalText = existing?.text || unsentData.text || '';
@@ -152,8 +174,9 @@
       senderName:
         existing?.senderName ||
         unsentData.senderName ||
+        extractNameFromNotice(unsentData.unsendNotice) ||
         findActiveThreadName() ||
-        'Cuộc trò chuyện Facebook',
+        'Facebook Chat',
       timestamp: existing?.timestamp || unsentData.timestamp || Date.now(),
       unsentAt: Date.now(),
       isUnsent: true
@@ -169,6 +192,7 @@
     } else {
       unsentMessagesList.unshift(record);
       showUnsentToast(record);
+      notifyUnreadBadge();
     }
 
     saveToStorage();
@@ -179,25 +203,93 @@
   // 2. QUÉT CHÍNH XÁC CÁC DÒNG TIN NHẮN TRONG KHUNG CHAT (KHÔNG QUÉT NEWS FEED)
   // ============================================================================
 
-  function findActiveThreadName(contextEl = null) {
+  function findActiveThreadName(contextEl = null, noticeText = '') {
     try {
       if (contextEl instanceof HTMLElement) {
-        const chatDialog = contextEl.closest('div[role="dialog"], div[role="main"]');
-        if (chatDialog) {
-          const h2 = chatDialog.querySelector('h1, h2');
-          if (h2 && h2.innerText) {
-            return h2.innerText.trim().split('\n')[0];
+        const chatContainer = contextEl.closest(
+          'div[role="dialog"], div[role="region"], div[data-pagelet*="ChatTab"], div[role="main"]'
+        );
+        if (chatContainer) {
+          // 1. Kiểm tra aria-label của cửa sổ chat (VD: "Cuộc trò chuyện với Nguyễn Trọng Bình")
+          const ariaLabel = chatContainer.getAttribute('aria-label') || '';
+          if (ariaLabel) {
+            const stripped = ariaLabel
+              .replace(/^(Cuộc trò chuyện với|Đoạn chat với|Conversation with|Chat with)\s+/i, '')
+              .trim();
+            if (
+              stripped &&
+              stripped.length < 60 &&
+              !/^(Đoạn chat|Chats|Messenger|Facebook)$/i.test(stripped)
+            ) {
+              return stripped;
+            }
+          }
+
+          // 2. Kiểm tra thẻ tiêu đề trong phần đầu khung chat
+          const headerEl = chatContainer.querySelector(
+            'h1, h2, h3, h4, [role="heading"], a[role="link"] span[dir="auto"]'
+          );
+          if (headerEl && headerEl.innerText) {
+            const name = headerEl.innerText.trim().split('\n')[0];
+            if (name && name.length < 60) return name;
           }
         }
       }
-      const headerEl = document.querySelector(
+
+      const fromNotice = extractNameFromNotice(noticeText);
+      if (fromNotice) return fromNotice;
+
+      const globalHeader = document.querySelector(
         'div[aria-label*="Cuộc trò chuyện"] h2, div[aria-label*="Conversation"] h2, div[role="dialog"] h2, div[role="main"] h1'
       );
-      if (headerEl && headerEl.innerText) {
-        return headerEl.innerText.trim().split('\n')[0];
+      if (globalHeader && globalHeader.innerText) {
+        return globalHeader.innerText.trim().split('\n')[0];
       }
     } catch (_) {}
     return 'Facebook Chat';
+  }
+
+  /**
+   * Chuyển ảnh (đặc biệt là ảnh E2EE dạng blob: vốn sẽ bị Facebook thu hồi ngay khi gỡ)
+   * sang dạng Data URL (webp nén nhẹ) để giữ lại vĩnh viễn khi tin nhắn bị xóa
+   */
+  const cachedImageMap = new Map(); // rawSrc -> dataUrl
+  function getOrCacheImageSrc(imgEl) {
+    const rawSrc = imgEl.currentSrc || imgEl.src || '';
+    if (!rawSrc) return '';
+    if (cachedImageMap.has(rawSrc)) {
+      return cachedImageMap.get(rawSrc);
+    }
+
+    // Nếu ảnh đã tải xong và vẽ được lên canvas (như ảnh blob: trong E2EE)
+    if (imgEl.complete && imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
+      try {
+        const maxDim = 360;
+        let w = imgEl.naturalWidth;
+        let h = imgEl.naturalHeight;
+        if (w > maxDim || h > maxDim) {
+          if (w > h) {
+            h = Math.round((h * maxDim) / w);
+            w = maxDim;
+          } else {
+            w = Math.round((w * maxDim) / h);
+            h = maxDim;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(imgEl, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/webp', 0.82);
+        if (dataUrl && dataUrl.startsWith('data:image/')) {
+          cachedImageMap.set(rawSrc, dataUrl);
+          return dataUrl;
+        }
+      } catch (_) {}
+    }
+
+    return rawSrc;
   }
 
   /**
@@ -287,8 +379,8 @@
     // 3. Trích xuất hình ảnh / sticker / video trong dòng tin nhắn (bỏ qua avatar người gửi)
     const attachments = [];
     rowEl.querySelectorAll('img, video, audio').forEach((mediaEl) => {
-      const src = mediaEl.currentSrc || mediaEl.src || '';
-      if (!src || src.startsWith('data:image/svg')) return;
+      const rawSrc = mediaEl.currentSrc || mediaEl.src || '';
+      if (!rawSrc || rawSrc.startsWith('data:image/svg')) return;
 
       if (mediaEl.tagName === 'IMG') {
         const rect = mediaEl.getBoundingClientRect();
@@ -301,10 +393,16 @@
         ) {
           return;
         }
+
+        const cachedSrc = getOrCacheImageSrc(mediaEl);
+        if (cachedSrc && !attachments.includes(cachedSrc)) {
+          attachments.push(cachedSrc);
+        }
+        return;
       }
 
-      if (!attachments.includes(src)) {
-        attachments.push(src);
+      if (!attachments.includes(rawSrc)) {
+        attachments.push(rawSrc);
       }
     });
 
@@ -468,6 +566,7 @@
         restored &&
         (restored.text || (restored.attachments && restored.attachments.length > 0))
       ) {
+        const noticeTextBeforeRestore = (noticeEl.textContent || '').trim();
         renderRestoredContentInDom(rowEl, noticeEl, restored);
 
         const msgId = restored.messageId || `unsend_${Date.now()}`;
@@ -478,11 +577,16 @@
         );
 
         if (!alreadySaved) {
+          const resolvedSenderName =
+            restored.senderName && restored.senderName !== 'Facebook Chat'
+              ? restored.senderName
+              : findActiveThreadName(rowEl, noticeTextBeforeRestore);
+
           const unsentRecord = {
             messageId: msgId,
             text: restored.text || '',
             attachments: restored.attachments || [],
-            senderName: restored.senderName || threadName || 'Facebook Chat',
+            senderName: resolvedSenderName || 'Facebook Chat',
             timestamp: restored.timestamp || Date.now(),
             unsentAt: Date.now(),
             isUnsent: true
@@ -496,6 +600,7 @@
           unsentMessagesList.unshift(unsentRecord);
           saveToStorage();
           showUnsentToast(unsentRecord);
+          notifyUnreadBadge();
         }
       } else {
         // Nếu dòng này đã bị xóa từ trước khi mở khung chat (không có dữ liệu gốc),

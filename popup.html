@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FB Unsend Message Viewer</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <header class="popup-header">
+      <div class="header-title-group">
+        <span class="header-icon">🚨</span>
+        <h1>Tin nhắn bị gỡ</h1>
+        <span id="unsent-count" class="count-badge">0</span>
+      </div>
+      <button id="clear-all-btn" class="danger-btn" title="Xóa toàn bộ lịch sử tin nhắn bị gỡ">
+        Xóa tất cả
+      </button>
+    </header>
+
+    <div class="search-bar">
+      <input
+        type="text"
+        id="search-input"
+        placeholder="Tìm theo tên người gửi hoặc nội dung..."
+        autocomplete="off"
+      >
+    </div>
+
+    <main id="unsent-list" class="unsent-list">
+      <div class="empty-state">Chưa có tin nhắn nào bị gỡ được ghi nhận.</div>
+    </main>
+
+    <footer class="popup-footer">
+      <span id="captured-stats">Đang lưu tạm: 0 tin nhắn</span>
+      <span class="version-tag">v3.4 • E2EE Ready</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

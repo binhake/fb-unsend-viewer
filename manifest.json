@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FB Unsend Message Viewer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Ghi nhận ngầm và khôi phục tin nhắn bị gỡ trên Facebook ngay cả khi chuyển sang tab khác.",
   "permissions": [
     "storage",
@@ -10,6 +10,13 @@
   "host_permissions": [
     "*://*.facebook.com/*"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Xem lịch sử tin nhắn bị gỡ"
+  },
   "content_scripts": [
     {
       "matches": [
