@@ -8,36 +8,114 @@
 </head>
 <body>
   <div class="popup-container">
+    <!-- Header & Thanh công cụ Backup -->
     <header class="popup-header">
-      <div class="header-title-group">
-        <span class="header-icon">🚨</span>
-        <h1>Tin nhắn bị gỡ</h1>
-        <span id="unsent-count" class="count-badge">0</span>
+      <div class="brand-group">
+        <div class="brand-logo" title="FB Unsend Viewer">🛡️</div>
+        <div class="brand-text">
+          <div class="brand-title-row">
+            <h1>FB Unsend Viewer</h1>
+            <span class="live-dot" title="Đang bảo vệ theo thời gian thực"></span>
+          </div>
+          <p class="brand-subtitle">Khôi phục tin nhắn thu hồi • E2EE Ready</p>
+        </div>
       </div>
-      <button id="clear-all-btn" class="danger-btn" title="Xóa toàn bộ lịch sử tin nhắn bị gỡ">
-        Xóa tất cả
-      </button>
+
+      <div class="header-actions">
+        <button id="export-btn" class="tool-btn" title="Xuất toàn bộ dữ liệu ra tệp JSON để sao lưu (Backup)">
+          <span>⬇</span> Xuất
+        </button>
+        <button id="import-btn" class="tool-btn" title="Nhập dữ liệu từ tệp JSON đã sao lưu">
+          <span>⬆</span> Nhập
+        </button>
+        <input type="file" id="import-file-input" accept=".json,application/json" hidden>
+        <button id="clear-all-btn" class="tool-btn danger-btn" title="Xóa toàn bộ lịch sử tin nhắn bị gỡ">
+          <span>🗑</span> Xóa hết
+        </button>
+      </div>
     </header>
 
-    <div class="search-bar">
-      <input
-        type="text"
-        id="search-input"
-        placeholder="Tìm theo tên người gửi hoặc nội dung..."
-        autocomplete="off"
-      >
-    </div>
+    <!-- Banner thông báo trạng thái Xuất / Nhập / Xóa -->
+    <div id="status-banner" class="status-banner" hidden></div>
 
+    <!-- Thanh thống kê nhanh -->
+    <section class="stats-bar">
+      <div class="stat-item">
+        <span class="stat-value accent-red" id="stat-total">0</span>
+        <span class="stat-label">Đã thu hồi</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value accent-amber" id="stat-others">0</span>
+        <span class="stat-label">Người khác</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value accent-blue" id="stat-media">0</span>
+        <span class="stat-label">Có hình ảnh</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value accent-emerald" id="stat-cached">0</span>
+        <span class="stat-label">Lưu tạm</span>
+      </div>
+    </section>
+
+    <!-- Khu vực Tìm kiếm & Lọc -->
+    <section class="controls-section">
+      <div class="search-row">
+        <div class="search-input-wrap">
+          <span class="search-icon">🔍</span>
+          <input
+            type="text"
+            id="search-input"
+            placeholder="Tìm nội dung, người gửi hoặc tên nhóm..."
+            autocomplete="off"
+          >
+          <button id="clear-search-btn" class="clear-search-btn" title="Xóa từ khóa" hidden>✕</button>
+        </div>
+        <select id="thread-filter" class="thread-select" title="Lọc theo cuộc trò chuyện / nhóm chat">
+          <option value="ALL">Tất cả cuộc trò chuyện</option>
+        </select>
+      </div>
+
+      <div class="filter-tabs" id="filter-tabs">
+        <button type="button" class="tab-btn active" data-filter="all">Tất cả</button>
+        <button type="button" class="tab-btn" data-filter="others">Người khác gỡ</button>
+        <button type="button" class="tab-btn" data-filter="self">Bạn gỡ</button>
+        <button type="button" class="tab-btn" data-filter="media">📷 Có ảnh</button>
+      </div>
+    </section>
+
+    <!-- Danh sách tin nhắn bị gỡ -->
     <main id="unsent-list" class="unsent-list">
-      <div class="empty-state">Chưa có tin nhắn nào bị gỡ được ghi nhận.</div>
+      <div class="empty-state">
+        <div class="empty-icon">📭</div>
+        <div class="empty-title">Chưa có tin nhắn nào bị gỡ</div>
+        <div class="empty-desc">Mọi tin nhắn văn bản và hình ảnh bị thu hồi trên Facebook &amp; Messenger sẽ tự động hiển thị tại đây.</div>
+      </div>
     </main>
 
+    <!-- Footer -->
     <footer class="popup-footer">
-      <span id="captured-stats">Đang lưu tạm: 0 tin nhắn</span>
-      <span class="version-tag">v3.4 • E2EE Ready</span>
+      <span id="footer-info">Đồng bộ trên facebook.com &amp; messages/t/*</span>
+      <span class="version-tag">v4.0 Pro</span>
     </footer>
+
+    <!-- Hộp thoại phóng to ảnh (Image Lightbox) ngay trong Popup -->
+    <div id="lightbox-modal" class="lightbox-modal" hidden>
+      <div class="lightbox-content">
+        <img id="lightbox-img" src="" alt="Ảnh khôi phục">
+        <div class="lightbox-actions">
+          <a id="lightbox-download" href="" download="fb-unsent-image.webp" class="lightbox-btn primary">
+            ⬇ Tải ảnh về máy
+          </a>
+          <button type="button" id="lightbox-close" class="lightbox-btn">
+            ✕ Đóng
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="popup.js"></script>
 </body>
 </html>
+
