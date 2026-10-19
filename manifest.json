@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "FB Unsend Message Viewer",
+  "version": "1.0.0",
+  "description": "Ghi nhận ngầm và khôi phục tin nhắn bị gỡ trên Facebook ngay cả khi chuyển sang tab khác.",
+  "permissions": [
+    "storage",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "*://*.facebook.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.facebook.com/*"
+      ],
+      "js": [
+        "injected.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "*://*.facebook.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "styles.css"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}
