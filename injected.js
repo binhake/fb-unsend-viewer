@@ -26,6 +26,9 @@
   const aliasIdMap = new Map();
   const processedNodes = new WeakSet();
   const vaultMap = new Map();
+  // Lưu ánh xạ ID người dùng -> Tên đầy đủ và ID nhóm -> Tên nhóm từ dữ liệu ngầm Lightspeed
+  const contactNameMap = new Map();
+  const threadNameMap = new Map();
   // Lưu các chuỗi E2EE đã thấy để chống trùng lặp khi React render lại nhiều lần
   const seenE2EETexts = new Map(); // text -> messageId
   let lastE2EEMessageId = null;
@@ -265,6 +268,37 @@
     return ts < PAGE_LOAD_TIME - 15 * 1000;
   }
 
+  function resolveContactAndThreadName(senderId, threadId, explicitSenderName = '', explicitThreadName = '') {
+    const cleanSenderId = senderId ? String(senderId).trim() : '';
+    const cleanThreadId = threadId ? String(threadId).trim() : '';
+
+    const mappedContact = cleanSenderId ? contactNameMap.get(cleanSenderId) || '' : '';
+    const mappedThread = cleanThreadId ? threadNameMap.get(cleanThreadId) || '' : '';
+
+    const finalPersonName = explicitSenderName || mappedContact || '';
+    const finalThreadName = explicitThreadName || mappedThread || '';
+
+    let combinedName = '';
+    if (finalPersonName && finalThreadName) {
+      if (
+        finalPersonName.toLowerCase() === finalThreadName.toLowerCase() ||
+        finalThreadName.toLowerCase().includes(finalPersonName.toLowerCase())
+      ) {
+        combinedName = finalThreadName;
+      } else {
+        combinedName = `${finalPersonName} • ${finalThreadName}`;
+      }
+    } else {
+      combinedName = finalPersonName || finalThreadName || '';
+    }
+
+    return {
+      senderName: combinedName,
+      personName: finalPersonName,
+      threadName: finalThreadName
+    };
+  }
+
   function registerCapturedMessage(msgData) {
     let {
       messageId,
@@ -273,6 +307,7 @@
       senderId,
       threadId,
       senderName,
+      threadName,
       attachments,
       timestamp,
       source
@@ -299,6 +334,8 @@
         triggerMessageUnsent(messageId, {
           senderId,
           threadId,
+          senderName,
+          threadName,
           unsendNotice: unvaultedText,
           source
         });
@@ -327,6 +364,15 @@
       }
     }
 
+    const finalSenderId = senderId || existing?.senderId || '';
+    const finalThreadId = threadId || existing?.threadId || '';
+    const resolvedNames = resolveContactAndThreadName(
+      finalSenderId,
+      finalThreadId,
+      senderName || existing?.personName || '',
+      threadName || existing?.threadName || ''
+    );
+
     const isActuallyNew =
       !existing ||
       (!existing.text && finalText) ||
@@ -335,9 +381,11 @@
     const updatedRecord = {
       messageId,
       text: finalText,
-      senderId: senderId || existing?.senderId || '',
-      threadId: threadId || existing?.threadId || '',
-      senderName: senderName || existing?.senderName || '',
+      senderId: finalSenderId,
+      threadId: finalThreadId,
+      senderName: resolvedNames.senderName || existing?.senderName || '',
+      personName: resolvedNames.personName || existing?.personName || '',
+      threadName: resolvedNames.threadName || existing?.threadName || '',
       attachments: mergedAttachments,
       timestamp: timestamp || existing?.timestamp || Date.now(),
       capturedAt: existing?.capturedAt || Date.now(),
@@ -349,7 +397,7 @@
 
     if (isActuallyNew) {
       console.log(
-        `${LOG_PREFIX} 📩 Đã bắt ngầm tin nhắn [${messageId}] (Nguồn: ${updatedRecord.source}):`,
+        `${LOG_PREFIX} 📩 Đã bắt ngầm tin nhắn [${messageId}] (${updatedRecord.senderName || updatedRecord.source}):`,
         updatedRecord.text || `(Đính kèm: ${updatedRecord.attachments.length} media)`
       );
       emitToContentScript('FB_MSG_CAPTURED', updatedRecord);
@@ -364,8 +412,23 @@
     if (!existing || existing.isUnsent) return;
     if (!existing.text && (!existing.attachments || existing.attachments.length === 0)) return;
 
+    const finalSenderId = extraInfo.senderId || existing.senderId || '';
+    const finalThreadId = extraInfo.threadId || existing.threadId || '';
+    const resolvedNames = resolveContactAndThreadName(
+      finalSenderId,
+      finalThreadId,
+      extraInfo.senderName || existing.personName || '',
+      extraInfo.threadName || existing.threadName || ''
+    );
+
     const record = {
       ...existing,
+      senderId: finalSenderId,
+      threadId: finalThreadId,
+      senderName: resolvedNames.senderName || existing.senderName || '',
+      personName: resolvedNames.personName || existing.personName || '',
+      threadName: resolvedNames.threadName || existing.threadName || '',
+      unsendNotice: extraInfo.unsendNotice || existing.unsendNotice || '',
       unsentAt: Date.now(),
       source: extraInfo.source || existing.source || 'internal',
       isUnsent: true
@@ -374,7 +437,7 @@
     capturedMessages.set(messageId, record);
 
     console.log(
-      `${LOG_PREFIX} 🚨 PHÁT HIỆN GỠ TIN NHẮN NGẦM [${messageId}] (Nguồn: ${record.source})! Nội dung gốc:`,
+      `${LOG_PREFIX} 🚨 PHÁT HIỆN GỠ TIN NHẮN NGẦM [${messageId}] (${record.senderName || record.source})! Nội dung gốc:`,
       record.text || `[Media: ${record.attachments.join(', ')}]`
     );
 
@@ -455,7 +518,59 @@
     if (!args) return;
     if (/InsertNewMessageRange/i.test(moduleName)) return;
 
-    // A. Xử lý chuyên biệt cấu trúc 81-83 tham số của LSUpsertMessage & LSDeleteThenInsertMessage
+    // A0. Bắt tên người dùng từ bảng danh bạ Lightspeed (LSVerifyContactRowExists / LSUpdateOrInsertContact)
+    if (/^(LSVerifyContactRowExists|LSUpdateOrInsertContact|LSUpsertContact)(\.|$)/i.test(moduleName)) {
+      const contactId = parseLSInt64(args[0]);
+      if (contactId && contactId !== '0') {
+        for (let i = 1; i < Math.min(args.length, 10); i++) {
+          if (typeof args[i] === 'string') {
+            const candidate = unvaultString(args[i]).trim();
+            if (
+              candidate.length >= 2 &&
+              candidate.length <= 80 &&
+              !candidate.startsWith('http') &&
+              !isTechnicalString(candidate)
+            ) {
+              contactNameMap.set(contactId, candidate);
+              break;
+            }
+          }
+        }
+      }
+      return;
+    }
+
+    // A1. Bắt tên nhóm / cuộc trò chuyện từ bảng Thread Lightspeed (LSUpdateOrInsertThread / LSVerifyHybridThreadExists)
+    if (/^(LSUpdateOrInsertThread|LSVerifyHybridThreadExists|LSUpsertThread)(\.|$)/i.test(moduleName)) {
+      let threadId = '';
+      let threadName = '';
+      for (let i = 0; i < Math.min(args.length, 16); i++) {
+        if (!threadId && Array.isArray(args[i]) && args[i].length === 2) {
+          const idStr = parseLSInt64(args[i]);
+          const num = Number(idStr);
+          if (idStr && idStr.length >= 6 && !(num > 1577836800000 && num < 2051222400000)) {
+            threadId = idStr;
+          }
+        } else if (!threadName && typeof args[i] === 'string') {
+          const candidate = unvaultString(args[i]).trim();
+          if (
+            candidate.length >= 2 &&
+            candidate.length <= 100 &&
+            !candidate.startsWith('http') &&
+            !isTechnicalString(candidate) &&
+            !isUnsendNoticeText(candidate)
+          ) {
+            threadName = candidate;
+          }
+        }
+      }
+      if (threadId && threadName) {
+        threadNameMap.set(threadId, threadName);
+      }
+      return;
+    }
+
+    // A2. Xử lý chuyên biệt cấu trúc 81-83 tham số của LSUpsertMessage & LSDeleteThenInsertMessage
     if (/^(LSUpsertMessage|LSDeleteThenInsertMessage)(\.|$)/i.test(moduleName) && args.length >= 18) {
       const rawText = typeof args[0] === 'string' ? unvaultString(args[0]) : undefined;
       const msgId = typeof args[8] === 'string' ? unvaultString(args[8]).trim() : '';
@@ -479,7 +594,7 @@
             const numVal = Number(strVal);
             if (numVal > 1577836800000 && numVal < 2051222400000) {
               validTimestamps.push(numVal);
-            } else if (strVal.length >= 10 && strVal !== '0') {
+            } else if (strVal.length >= 6 && strVal !== '0') {
               validIds.push(strVal);
             }
           }
@@ -487,8 +602,11 @@
       }
 
       const timestamp = validTimestamps.length > 0 ? Math.min(...validTimestamps) : null;
-      const threadId = validIds[0] || '';
-      const senderId = validIds[1] || validIds[0] || '';
+      // Trong LSUpsertMessage/LSDeleteThenInsertMessage: args[3] là threadKey, args[10] là senderId
+      const explicitThreadId = parseLSInt64(args[3]);
+      const explicitSenderId = parseLSInt64(args[10]);
+      const threadId = explicitThreadId || validIds[0] || '';
+      const senderId = explicitSenderId || validIds[1] || validIds[0] || '';
 
       const resolvedId = resolveCanonicalMessageId(msgId);
       const isUnsent =
@@ -725,7 +843,7 @@
   }
 
   const SAFE_TARGET_MODULE_REGEX =
-    /^(LSUpsertMessage|LSDeleteThenInsertMessage|LSInsertMessage|LSReplaceOptimisticMessage|LSDeleteMessage|LSDeleteMessageRequest|LSMarkMessageUnsent|LSHandleUnsendMessage|LSUpdateMessage|LSInsertBlobAttachment|MAWUnvaultTransform|MAWVault|MAWThreadSnippetFor.*Msg|MAWBridgeBuildThreadSnippet)$/i;
+    /^(LSUpsertMessage|LSDeleteThenInsertMessage|LSInsertMessage|LSReplaceOptimisticMessage|LSDeleteMessage|LSDeleteMessageRequest|LSMarkMessageUnsent|LSHandleUnsendMessage|LSUpdateMessage|LSInsertBlobAttachment|LSVerifyContactRowExists|LSUpdateOrInsertContact|LSUpsertContact|LSUpdateOrInsertThread|LSVerifyHybridThreadExists|LSUpsertThread|MAWUnvaultTransform|MAWVault|MAWThreadSnippetFor.*Msg|MAWBridgeBuildThreadSnippet)$/i;
 
   let currentDefFunc = window.__d;
   function wrapDefineFn(origD) {
@@ -791,7 +909,7 @@
       } else if (
         node.length >= 2 &&
         typeof node[0] === 'string' &&
-        /Message|Unsent|Snippet|Attachment|Thread/i.test(node[0])
+        /Message|Unsent|Snippet|Attachment|Thread|Contact/i.test(node[0])
       ) {
         currentFunc = node[0];
       }
@@ -839,6 +957,32 @@
           if (i64Str) {
             directI64Values.push(i64Str);
           }
+        }
+      }
+
+      // Lưu tên người dùng hoặc tên nhóm nếu đây là lệnh verifyContactRowExists / updateOrInsertThread
+      if (
+        /verifyContactRowExists|updateOrInsertContact/i.test(currentFunc) &&
+        directI64Values.length > 0 &&
+        directTextLiterals.length > 0
+      ) {
+        const cId = directI64Values[0];
+        const cName = directTextLiterals[0];
+        if (cId && cId !== '0' && cName.length >= 2 && cName.length <= 80) {
+          contactNameMap.set(cId, cName);
+        }
+      } else if (
+        /updateOrInsertThread|verifyHybridThreadExists/i.test(currentFunc) &&
+        directI64Values.length > 0 &&
+        directTextLiterals.length > 0
+      ) {
+        const tId = directI64Values.find((v) => {
+          const n = Number(v);
+          return v.length >= 6 && !(n > 1577836800000 && n < 2051222400000);
+        });
+        const tName = directTextLiterals[0];
+        if (tId && tName && tName.length >= 2 && tName.length <= 100) {
+          threadNameMap.set(tId, tName);
         }
       }
 
