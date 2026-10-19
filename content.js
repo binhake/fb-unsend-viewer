@@ -1,41 +1,43 @@
 /**
  * content.js - Chạy trong ISOLATED world trên facebook.com
  * Nhiệm vụ:
- * 1. Nhận dữ liệu tin nhắn & sự kiện thu hồi từ injected.js (WebSocket, Lightspeed, MessagePort E2EE, React Fiber).
- * 2. Theo dõi trực tiếp và chụp ảnh vi sai (Snapshot Diffing) các khung chat để bắt 100% tin nhắn E2EE
- *    ngay cả khi Facebook mã hóa hoàn toàn luồng Worker.
- * 3. Lưu vào chrome.storage.local, hiện thông báo Toast và hiển thị nội dung gốc ngay dưới thông báo thu hồi.
+ * 1. Nhận dữ liệu tin nhắn mới & sự kiện thu hồi từ injected.js.
+ * 2. Chỉ theo dõi các dòng tin nhắn thực sự trong khung chat (div[data-scope="messages_table"]),
+ *    không quét nhầm News Feed, Stories hay danh sách hội thoại bên ngoài.
+ * 3. Phát hiện chính xác thông báo "đã xóa một tin nhắn" / "đã thu hồi một tin nhắn" mới xuất hiện,
+ *    đối chiếu với tin nhắn vừa biến mất (Snapshot Diffing) hoặc dữ liệu đã lưu để khôi phục ngay lập tức.
  */
 
 (function () {
   const LOG_PREFIX = '[FB-Unsend-Content]';
-  const STORAGE_KEY_MESSAGES = 'fb_captured_messages_v1';
-  const STORAGE_KEY_UNSENT = 'fb_unsent_messages_v1';
-  const MAX_STORED_MESSAGES = 1000;
+  // Đổi khóa lưu trữ sang v2 để xóa sạch dữ liệu lịch sử cũ bị bắt nhầm ở bản thử nghiệm trước
+  const STORAGE_KEY_MESSAGES = 'fb_captured_messages_v2';
+  const STORAGE_KEY_UNSENT = 'fb_unsent_messages_v2';
+  const MAX_STORED_MESSAGES = 500;
 
-  // Map lưu tin nhắn theo ID từ tầng ngầm / React Fiber: messageId -> messageObj
   const messagesById = new Map();
-  // Map lưu dữ liệu gắn với phần tử DOM dòng tin nhắn
   const domRowMessages = new WeakMap();
-  // Danh sách tin nhắn đã bắt được
   let recentMessagesList = [];
-  // Danh sách tin nhắn đã bị gỡ
   let unsentMessagesList = [];
 
-  // Lưu trạng thái ảnh chụp (Snapshot) các tin nhắn đang hiển thị trên màn hình để so sánh vi sai khi có tin bị gỡ
-  // Map: textOrKey -> { text, attachments, senderName, timestamp, element }
+  // Ảnh chụp các dòng tin nhắn đang hiển thị trong khung chat hiện tại
+  // Map: rowKey -> { messageId, text, attachments, senderName, timestamp, rowIndex }
   let visibleMessagesSnapshot = new Map();
+  let isInitialScanDone = false;
 
-  // Mẫu nhận diện thông báo thu hồi của Facebook (Tiếng Việt & Tiếng Anh)
+  // Mẫu nhận diện thông báo thu hồi / xóa tin nhắn trên Facebook (bao gồm "đã xóa một tin nhắn")
   const UNSEND_REGEX =
-    /(đã thu hồi một tin nhắn|bạn đã thu hồi một tin nhắn|đã gỡ một tin nhắn|bạn đã gỡ một tin nhắn|tin nhắn đã bị thu hồi|tin nhắn đã được thu hồi|unsent a message|you unsent a message|removed a message|message was unsent)/i;
+    /(đã xóa một tin nhắn|đã xoá một tin nhắn|bạn đã xóa một tin nhắn|bạn đã xoá một tin nhắn|đã thu hồi một tin nhắn|bạn đã thu hồi một tin nhắn|đã gỡ một tin nhắn|bạn đã gỡ một tin nhắn|tin nhắn đã bị thu hồi|tin nhắn đã được thu hồi|tin nhắn đã bị xóa|unsent a message|you unsent a message|deleted a message|you deleted a message|removed a message|message was unsent)/i;
 
-  // Các nhãn trạng thái giao diện của Facebook cần bỏ qua khi trích xuất văn bản tin nhắn
+  // Các nhãn giao diện cần bỏ qua khi đọc text trong dòng chat
   const UI_IGNORE_REGEX =
-    /^(Đã gửi|Đã nhận|Đã xem|Đang gửi|Đang viết|Sent|Delivered|Seen|Sending|Typing|Enter|Nhấn Enter để gửi|Được mã hóa đầu cuối|End-to-end encrypted|Trả lời|Reply|Chuyển tiếp|Forward|Xem thêm|See more|\d{1,2}:\d{2}(\s?[AP]M)?)$/i;
+    /^(Đã gửi|Đã nhận|Đã xem|Đang gửi|Đang viết|Sent|Delivered|Seen|Sending|Typing|Enter|Nhấn Enter để gửi|Được mã hóa đầu cuối|End-to-end encrypted|Trả lời|Reply|Chuyển tiếp|Forward|Xem thêm|See more|Bạn đã chuyển tiếp một tin nhắn|\d{1,2}:\d{2}(\s?[AP]M)?(\s+T\d|\s+CN)?)$/i;
 
   function loadFromStorage() {
     if (!chrome?.storage?.local) return;
+    // Dọn dẹp khóa v1 cũ nếu có
+    chrome.storage.local.remove(['fb_captured_messages_v1', 'fb_unsent_messages_v1']);
+
     chrome.storage.local.get([STORAGE_KEY_MESSAGES, STORAGE_KEY_UNSENT], (res) => {
       if (Array.isArray(res[STORAGE_KEY_MESSAGES])) {
         recentMessagesList = res[STORAGE_KEY_MESSAGES];
@@ -49,7 +51,7 @@
         unsentMessagesList = res[STORAGE_KEY_UNSENT];
       }
       console.log(
-        `${LOG_PREFIX} Đã tải ${recentMessagesList.length} tin nhắn lưu tạm và ${unsentMessagesList.length} tin nhắn bị gỡ.`
+        `${LOG_PREFIX} Đã sẵn sàng (${recentMessagesList.length} tin nhắn lưu tạm, ${unsentMessagesList.length} tin nhắn bị gỡ).`
       );
     });
   }
@@ -69,7 +71,6 @@
     }, 300);
   }
 
-  // Yêu cầu injected.js (MAIN world) quét React Fiber để lấy messageId của tin nhắn E2EE
   let fiberScanTimer = null;
   function requestMainWorldFiberScan() {
     if (fiberScanTimer) return;
@@ -84,11 +85,11 @@
           '*'
         );
       } catch (_) {}
-    }, 120);
+    }, 100);
   }
 
   // ============================================================================
-  // 1. NHẬN DỮ LIỆU TỪ TẦNG NGẦM (injected.js)
+  // 1. NHẬN SỰ KIỆN TỪ TẦNG NGẦM (injected.js)
   // ============================================================================
   window.addEventListener('message', (event) => {
     if (event.source !== window || !event.data) return;
@@ -140,6 +141,8 @@
         ? existing.attachments
         : unsentData.attachments || [];
 
+    if (!originalText && originalAttachments.length === 0) return;
+
     const record = {
       messageId: unsentData.messageId,
       text: originalText,
@@ -165,59 +168,95 @@
       unsentMessagesList[existingUnsentIdx] = record;
     } else {
       unsentMessagesList.unshift(record);
-    }
-
-    saveToStorage();
-
-    if (record.text || record.attachments.length > 0) {
       showUnsentToast(record);
     }
 
-    setTimeout(() => scanDomForMessagesAndUnsent(record), 100);
+    saveToStorage();
+    setTimeout(() => scanChatMessagesInDom(record), 80);
   }
 
   // ============================================================================
-  // 2. THEO DÕI TRỰC TIẾP KHUNG CHAT (DOM & SNAPSHOT DIFFING CHO E2EE)
+  // 2. QUÉT CHÍNH XÁC CÁC DÒNG TIN NHẮN TRONG KHUNG CHAT (KHÔNG QUÉT NEWS FEED)
   // ============================================================================
 
-  function findActiveThreadName() {
+  function findActiveThreadName(contextEl = null) {
     try {
+      if (contextEl instanceof HTMLElement) {
+        const chatDialog = contextEl.closest('div[role="dialog"], div[role="main"]');
+        if (chatDialog) {
+          const h2 = chatDialog.querySelector('h1, h2');
+          if (h2 && h2.innerText) {
+            return h2.innerText.trim().split('\n')[0];
+          }
+        }
+      }
       const headerEl = document.querySelector(
-        'div[role="main"] h1, div[role="main"] h2, div[role="dialog"] h2, div[aria-label*="Cuộc trò chuyện"] h2, div[aria-label*="Conversation"] h2'
+        'div[aria-label*="Cuộc trò chuyện"] h2, div[aria-label*="Conversation"] h2, div[role="dialog"] h2, div[role="main"] h1'
       );
       if (headerEl && headerEl.innerText) {
         return headerEl.innerText.trim().split('\n')[0];
       }
     } catch (_) {}
-    return '';
+    return 'Facebook Chat';
   }
 
   /**
-   * Tìm phần tử bao ngoài của một dòng tin nhắn trên Facebook (hỗ trợ cả giao diện cũ và E2EE mới)
+   * Lấy danh sách các phần tử dòng tin nhắn THỰC SỰ nằm trong cửa sổ chat đang mở
+   * Trên Facebook, mỗi cụm/dòng tin nhắn trong khung chat luôn có div[data-scope="messages_table"]
    */
-  function getMessageRowContainer(el) {
-    if (!el || !(el instanceof HTMLElement)) return null;
-    return (
-      el.closest(
-        'div[role="row"], div[role="gridcell"], div[data-scope="messages_table"]'
-      ) ||
-      el.parentElement?.parentElement ||
-      el.parentElement
-    );
+  function getActualChatRows() {
+    if (!document.body) return [];
+    const rows = Array.from(document.querySelectorAll('div[data-scope="messages_table"]'));
+    return rows.filter((row) => {
+      // Loại bỏ nếu nằm trong menu danh sách hội thoại bên ngoài
+      if (row.closest('[aria-label="Đoạn chat"], [aria-label="Chats"]')) return false;
+      return true;
+    });
   }
 
   /**
-   * Trích xuất văn bản và hình ảnh đính kèm trong một phần tử dòng tin nhắn
+   * Trích xuất nội dung của một dòng tin nhắn trong khung chat:
+   * Phân biệt rõ:
+   * - isUnsentRow: Dòng này đang hiển thị câu "Bình đã xóa một tin nhắn" / "đã thu hồi một tin nhắn"
+   * - text: Nội dung văn bản của tin nhắn (không lấy tên người gửi ở đầu dòng)
+   * - attachments: Hình ảnh / Video / Sticker trong tin nhắn
    */
-  function extractRowContent(rowEl) {
-    if (!rowEl || !(rowEl instanceof HTMLElement)) return { text: '', attachments: [] };
+  function analyzeChatRow(rowEl) {
+    if (!rowEl || !(rowEl instanceof HTMLElement)) {
+      return { isUnsentRow: false, unsentNoticeEl: null, text: '', attachments: [] };
+    }
 
+    // 1. Kiểm tra xem dòng này có chứa thông báo thu hồi / xóa tin nhắn không
+    let unsentNoticeEl = null;
+    const allElements = rowEl.querySelectorAll('div, span');
+    for (const el of allElements) {
+      if (el.closest('.fb-unsend-restored-box')) continue;
+      if (el.childElementCount === 0) {
+        const txt = (el.textContent || '').trim();
+        if (txt && txt.length < 120 && UNSEND_REGEX.test(txt)) {
+          unsentNoticeEl = el;
+          break;
+        }
+      }
+    }
+
+    if (unsentNoticeEl) {
+      return {
+        isUnsentRow: true,
+        unsentNoticeEl,
+        text: '',
+        attachments: []
+      };
+    }
+
+    // 2. Nếu là dòng tin nhắn bình thường -> Trích xuất văn bản tin nhắn trong div[dir="auto"]
     const texts = [];
-    const dirAutoEls = rowEl.querySelectorAll('div[dir="auto"], span[dir="auto"]');
-
-    dirAutoEls.forEach((el) => {
-      // Không lấy nội dung bên trong hộp khôi phục của chính extension
+    const textNodes = rowEl.querySelectorAll('div[dir="auto"]');
+    textNodes.forEach((el) => {
       if (el.closest('.fb-unsend-restored-box')) return;
+      // Bỏ qua tiêu đề tên người gửi (thường nằm trong thẻ h4, h5 hoặc span role="presentation" phía trên bong bóng)
+      if (el.closest('h3, h4, h5, h6')) return;
+
       const t = (el.innerText || '').trim();
       if (!t) return;
       if (UNSEND_REGEX.test(t) || UI_IGNORE_REGEX.test(t)) return;
@@ -226,6 +265,7 @@
       }
     });
 
+    // 3. Trích xuất hình ảnh / sticker / video trong dòng tin nhắn
     const attachments = [];
     rowEl.querySelectorAll('img, video, audio').forEach((mediaEl) => {
       if (mediaEl.closest('.fb-unsend-restored-box')) return;
@@ -233,10 +273,12 @@
       if (!src || src.startsWith('data:image/svg')) return;
 
       if (mediaEl.tagName === 'IMG') {
-        const w = mediaEl.naturalWidth || mediaEl.width || 0;
-        const h = mediaEl.naturalHeight || mediaEl.height || 0;
-        // Bỏ qua ảnh avatar nhỏ (<= 40px) hoặc icon cảm xúc nhỏ (<= 24px)
-        if (w > 0 && w <= 40 && h > 0 && h <= 40) return;
+        const w = mediaEl.naturalWidth || mediaEl.width || mediaEl.clientWidth || 0;
+        const h = mediaEl.naturalHeight || mediaEl.height || mediaEl.clientHeight || 0;
+        // Bỏ qua ảnh đại diện nhỏ (avatar người gửi cạnh bong bóng chat thường <= 36px) hoặc emoji nhỏ
+        if ((w > 0 && w <= 40 && h > 0 && h <= 40) || mediaEl.closest('a[role="link"]')) {
+          return;
+        }
       }
 
       if (!attachments.includes(src)) {
@@ -245,216 +287,159 @@
     });
 
     return {
+      isUnsentRow: false,
+      unsentNoticeEl: null,
       text: texts.join('\n').trim(),
       attachments
     };
   }
 
   /**
-   * Tìm tất cả các phần tử đang hiển thị câu thông báo thu hồi ("đã thu hồi một tin nhắn" / "unsent a message")
+   * Quét toàn bộ các dòng tin nhắn trong khung chat
    */
-  function findUnsentNoticeElements() {
-    const results = [];
-    if (!document.body) return results;
+  function scanChatMessagesInDom(specificRecord = null) {
+    const chatRows = getActualChatRows();
+    if (chatRows.length === 0) return;
 
-    const candidates = document.querySelectorAll(
-      'div[role="row"] div, div[role="row"] span, div[role="gridcell"] div, div[role="gridcell"] span, div[data-scope="messages_table"] div, div[data-scope="messages_table"] span, div[role="main"] span, div[role="dialog"] span'
-    );
+    const currentSnapshot = new Map();
+    const currentUnsentRows = [];
 
-    candidates.forEach((el) => {
-      if (el.closest('.fb-unsend-restored-box') || el.closest('#fb-unsend-toast-container')) {
-        return;
-      }
-      // Tìm phần tử lá trực tiếp chứa text thông báo thu hồi
-      if (el.childElementCount === 0) {
-        const txt = (el.textContent || '').trim();
-        if (txt && txt.length < 120 && UNSEND_REGEX.test(txt)) {
-          results.push(el);
-        }
-      }
-    });
+    chatRows.forEach((rowEl, index) => {
+      const analysis = analyzeChatRow(rowEl);
+      const threadName = findActiveThreadName(rowEl);
 
-    return results;
-  }
-
-  /**
-   * Quét toàn bộ khung chat để:
-   * 1. Ghi nhận mọi tin nhắn đang hiển thị (kể cả tin nhắn E2EE) vào Snapshot và Storage.
-   * 2. Phát hiện bất kỳ tin nhắn nào vừa biến thành thông báo thu hồi để khôi phục ngay lập tức.
-   */
-  function scanDomForMessagesAndUnsent(specificRecord = null) {
-    if (!document.body) return;
-
-    const currentVisibleKeys = new Set();
-    const newSnapshot = new Map();
-
-    // 1. Quét tất cả các phần tử tin nhắn có nội dung văn bản (div[dir="auto"]) hoặc media
-    const messageElements = document.querySelectorAll(
-      'div[role="row"], div[role="gridcell"], div[data-scope="messages_table"], div[role="main"] div[dir="auto"], div[role="dialog"] div[dir="auto"]'
-    );
-
-    const processedContainers = new WeakSet();
-
-    messageElements.forEach((el) => {
-      if (el.closest('.fb-unsend-restored-box') || el.closest('#fb-unsend-toast-container')) {
-        return;
-      }
-      // Không lấy phần tử trong ô nhập tin nhắn (textbox)
-      if (el.closest('[role="textbox"], [contenteditable="true"]')) {
+      if (analysis.isUnsentRow) {
+        currentUnsentRows.push({
+          rowEl,
+          noticeEl: analysis.unsentNoticeEl,
+          rowIndex: index,
+          threadName
+        });
         return;
       }
 
-      const rowContainer = getMessageRowContainer(el) || el;
-      if (processedContainers.has(rowContainer)) return;
-      processedContainers.add(rowContainer);
-
-      const extracted = extractRowContent(rowContainer);
-      if (extracted.text || extracted.attachments.length > 0) {
-        const prev = domRowMessages.get(rowContainer);
-        const fiberMsgId = rowContainer.dataset?.fbMsgId;
+      if (analysis.text || analysis.attachments.length > 0) {
+        const prev = domRowMessages.get(rowEl);
+        const fiberMsgId = rowEl.dataset?.fbMsgId;
         const msgId =
           fiberMsgId ||
           prev?.messageId ||
-          `dom_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+          `dom_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`;
 
         const record = {
           messageId: msgId,
-          text: extracted.text || prev?.text || '',
+          text: analysis.text || prev?.text || '',
           attachments:
-            extracted.attachments.length > 0
-              ? extracted.attachments
+            analysis.attachments.length > 0
+              ? analysis.attachments
               : prev?.attachments || [],
-          senderName: findActiveThreadName() || prev?.senderName || 'Facebook Chat',
-          timestamp: prev?.timestamp || Date.now()
+          senderName: threadName || prev?.senderName || 'Facebook Chat',
+          timestamp: prev?.timestamp || Date.now(),
+          rowIndex: index
         };
 
-        domRowMessages.set(rowContainer, record);
+        domRowMessages.set(rowEl, record);
 
-        // Lưu dự phòng vào dataset của phần tử dòng và phần tử cha để không bị mất khi React cập nhật con bên trong
+        // Lưu dữ liệu ngay trên phần tử DOM và phần tử cha của nó để khi bị xóa/sửa tại chỗ vẫn đọc lại được
         if (record.text) {
-          rowContainer.dataset.fbUnsendSavedText = record.text;
-          if (rowContainer.parentElement) {
-            rowContainer.parentElement.dataset.fbUnsendSavedText = record.text;
+          rowEl.dataset.fbUnsendSavedText = record.text;
+          if (rowEl.parentElement) {
+            rowEl.parentElement.dataset.fbUnsendSavedText = record.text;
           }
         }
         if (record.attachments.length > 0) {
           const mediaJson = JSON.stringify(record.attachments);
-          rowContainer.dataset.fbUnsendSavedMedia = mediaJson;
-          if (rowContainer.parentElement) {
-            rowContainer.parentElement.dataset.fbUnsendSavedMedia = mediaJson;
+          rowEl.dataset.fbUnsendSavedMedia = mediaJson;
+          if (rowEl.parentElement) {
+            rowEl.parentElement.dataset.fbUnsendSavedMedia = mediaJson;
           }
         }
 
-        // Đưa vào Snapshot hiện tại để đối chiếu vi sai nếu lát nữa tin nhắn này bị gỡ
-        const snapshotKey = `${record.text}__${record.attachments.join(',')}`;
-        currentVisibleKeys.add(snapshotKey);
-        newSnapshot.set(snapshotKey, {
-          ...record,
-          rowContainer
-        });
+        // Lưu vào Snapshot hiện tại
+        currentSnapshot.set(record.messageId, record);
 
-        // Nếu là tin nhắn mới trên DOM chưa từng được ghi nhận, lưu vào recentMessagesList và in log
-        if (!prev && (record.text || record.attachments.length > 0)) {
-          const alreadyLogged = recentMessagesList.some(
-            (m) =>
-              m.messageId === record.messageId ||
-              (m.text === record.text && Math.abs((m.timestamp || 0) - record.timestamp) < 5000)
+        // Chỉ in log và lưu khi có tin nhắn mới xuất hiện trên khung chat
+        if (!prev) {
+          console.log(
+            `${LOG_PREFIX} 💬 Đã ghi nhận tin nhắn trong khung chat [${record.senderName}]:`,
+            record.text || `(Đính kèm ${record.attachments.length} media)`
           );
-          if (!alreadyLogged) {
-            console.log(
-              `${LOG_PREFIX} 💬 Đã ghi nhận tin nhắn trên khung chat [${record.messageId}]:`,
-              record.text || `(Media: ${record.attachments.length})`
-            );
-            handleCapturedMessage(record);
-          }
+          handleCapturedMessage(record);
         }
       }
     });
 
-    // 2. Tìm xem có tin nhắn nào vừa biến mất khỏi Snapshot trước đó không
+    // Tìm các tin nhắn vừa biến mất khỏi khung chat so với Snapshot ngay trước đó
     const disappearedMessages = [];
-    for (const [key, oldRecord] of visibleMessagesSnapshot.entries()) {
-      if (!currentVisibleKeys.has(key)) {
-        disappearedMessages.push(oldRecord);
+    if (isInitialScanDone && visibleMessagesSnapshot.size > 0) {
+      // Kiểm tra xem có còn đang ở cùng khung chat không
+      const currentTexts = new Set(
+        Array.from(currentSnapshot.values()).map((r) => r.text)
+      );
+      for (const [id, oldRec] of visibleMessagesSnapshot.entries()) {
+        if (!currentSnapshot.has(id) && (!oldRec.text || !currentTexts.has(oldRec.text))) {
+          disappearedMessages.push(oldRec);
+        }
       }
     }
 
-    // 3. Quét tất cả các thông báo thu hồi ("đã thu hồi một tin nhắn" / "unsent a message") trên màn hình
-    const unsentNoticeEls = findUnsentNoticeElements();
-    unsentNoticeEls.forEach((noticeEl) => {
-      const rowContainer = getMessageRowContainer(noticeEl) || noticeEl.parentElement;
-      if (!rowContainer) return;
+    // Xử lý các dòng có thông báo "đã xóa một tin nhắn" / "đã thu hồi một tin nhắn"
+    currentUnsentRows.forEach(({ rowEl, noticeEl, rowIndex, threadName }) => {
+      // Nếu đã hiển thị hộp khôi phục rồi thì bỏ qua
+      if (rowEl.querySelector('.fb-unsend-restored-box')) return;
 
-      // Nếu dòng này đã được chèn hộp khôi phục rồi thì bỏ qua
-      if (
-        rowContainer.querySelector('.fb-unsend-restored-box') ||
-        noticeEl.parentElement?.querySelector('.fb-unsend-restored-box')
-      ) {
-        return;
-      }
-
-      // Tìm dữ liệu gốc của tin nhắn vừa bị gỡ theo thứ tự ưu tiên chính xác nhất:
+      // Tìm dữ liệu gốc của dòng vừa bị xóa
       let restored = specificRecord;
 
-      // Ưu tiên 1: Kiểm tra bộ nhớ WeakMap gắn trực tiếp với rowContainer
+      // Cách 1: Kiểm tra bộ nhớ gắn trực tiếp trên rowEl (nếu React giữ nguyên phần tử div[data-scope="messages_table"])
       if (!restored || (!restored.text && !restored.attachments?.length)) {
-        restored = domRowMessages.get(rowContainer);
+        restored = domRowMessages.get(rowEl);
       }
 
-      // Ưu tiên 2: Kiểm tra dataset dự phòng trên rowContainer hoặc phần tử cha
+      // Cách 2: Kiểm tra dataset dự phòng trên rowEl hoặc phần tử cha
       if (!restored || (!restored.text && !restored.attachments?.length)) {
         const savedText =
-          rowContainer.dataset?.fbUnsendSavedText ||
-          rowContainer.parentElement?.dataset?.fbUnsendSavedText;
+          rowEl.dataset?.fbUnsendSavedText ||
+          rowEl.parentElement?.dataset?.fbUnsendSavedText;
         const savedMediaStr =
-          rowContainer.dataset?.fbUnsendSavedMedia ||
-          rowContainer.parentElement?.dataset?.fbUnsendSavedMedia;
+          rowEl.dataset?.fbUnsendSavedMedia ||
+          rowEl.parentElement?.dataset?.fbUnsendSavedMedia;
         if (savedText || savedMediaStr) {
           let attachments = [];
           try {
             if (savedMediaStr) attachments = JSON.parse(savedMediaStr);
           } catch (_) {}
           restored = {
-            messageId: rowContainer.dataset?.fbMsgId || `dom_unsend_${Date.now()}`,
+            messageId: rowEl.dataset?.fbMsgId || `unsend_${Date.now()}_${rowIndex}`,
             text: savedText || '',
             attachments,
-            senderName: findActiveThreadName() || 'Facebook Chat',
+            senderName: threadName,
             timestamp: Date.now()
           };
         }
       }
 
-      // Ưu tiên 3: Kiểm tra theo Message ID từ React Fiber (data-fb-msg-id)
+      // Cách 3: Kiểm tra theo Message ID từ React Fiber
       if (!restored || (!restored.text && !restored.attachments?.length)) {
-        const fiberId =
-          rowContainer.dataset?.fbMsgId || rowContainer.parentElement?.dataset?.fbMsgId;
+        const fiberId = rowEl.dataset?.fbMsgId || rowEl.parentElement?.dataset?.fbMsgId;
         if (fiberId && messagesById.has(fiberId)) {
           restored = messagesById.get(fiberId);
         }
       }
 
-      // Ưu tiên 4: Phép so sánh vi sai (Snapshot Diffing) - Tin nhắn vừa biến mất khỏi màn hình ngay lúc xuất hiện dòng thu hồi!
+      // Cách 4: Nếu đây là dòng thông báo xóa MỚI xuất hiện (không phải dòng đã xóa cũ từ lúc mới mở khung chat)
+      // thì ghép với tin nhắn vừa biến mất khỏi khung chat (Snapshot Diffing)!
       if (!restored || (!restored.text && !restored.attachments?.length)) {
-        if (disappearedMessages.length > 0) {
-          restored = disappearedMessages.pop();
+        if (!rowEl.dataset.fbUnsendOldNotice && disappearedMessages.length > 0) {
+          // Tìm tin nhắn biến mất có vị trí dòng (rowIndex) gần với dòng vừa bị xóa nhất
+          disappearedMessages.sort(
+            (a, b) => Math.abs((a.rowIndex || 0) - rowIndex) - Math.abs((b.rowIndex || 0) - rowIndex)
+          );
+          restored = disappearedMessages.shift();
         }
       }
 
-      // Ưu tiên 5: Đối chiếu với danh sách tin nhắn bắt ngầm gần đây không còn hiển thị trên khung chat
-      if (!restored || (!restored.text && !restored.attachments?.length)) {
-        const chatArea =
-          rowContainer.closest('div[role="main"], div[role="dialog"]') || document.body;
-        const visibleText = chatArea.innerText || '';
-        for (let i = recentMessagesList.length - 1; i >= 0; i--) {
-          const cand = recentMessagesList[i];
-          if (cand.text && !visibleText.includes(cand.text)) {
-            restored = cand;
-            break;
-          }
-        }
-      }
-
-      // Nếu tìm thấy nội dung gốc -> Hiển thị lên khung chat + Báo Toast + Lưu lịch sử!
+      // Nếu tìm được nội dung gốc -> Khôi phục ngay lên màn hình + Hiện Toast + Lưu lịch sử!
       if (
         restored &&
         (restored.text || (restored.attachments && restored.attachments.length > 0))
@@ -462,44 +447,45 @@
         renderRestoredContentInDom(noticeEl, restored);
 
         const msgId = restored.messageId || `unsend_${Date.now()}`;
-        const alreadyInUnsent = unsentMessagesList.some(
+        const alreadySaved = unsentMessagesList.some(
           (u) =>
             u.messageId === msgId ||
-            (u.text === restored.text && Math.abs((u.unsentAt || 0) - Date.now()) < 8000)
+            (u.text === restored.text && Math.abs((u.unsentAt || 0) - Date.now()) < 10000)
         );
 
-        if (!alreadyInUnsent) {
+        if (!alreadySaved) {
           const unsentRecord = {
             messageId: msgId,
             text: restored.text || '',
             attachments: restored.attachments || [],
-            senderName:
-              restored.senderName || findActiveThreadName() || 'Cuộc trò chuyện Facebook',
+            senderName: restored.senderName || threadName || 'Facebook Chat',
             timestamp: restored.timestamp || Date.now(),
             unsentAt: Date.now(),
             isUnsent: true
           };
 
           console.log(
-            `${LOG_PREFIX} 🚨 ĐÃ KHÔI PHỤC TIN NHẮN BỊ GỠ [${msgId}]:`,
-            unsentRecord.text || `(Media: ${unsentRecord.attachments.length})`
+            `${LOG_PREFIX} 🚨 ĐÃ KHÔI PHỤC TIN NHẮN BỊ GỠ [${unsentRecord.senderName}]:`,
+            unsentRecord.text || `(Đính kèm ${unsentRecord.attachments.length} media)`
           );
 
           unsentMessagesList.unshift(unsentRecord);
           saveToStorage();
           showUnsentToast(unsentRecord);
         }
+      } else {
+        // Nếu dòng này đã bị xóa từ trước khi mở khung chat (không có dữ liệu gốc),
+        // đánh dấu là dòng cũ để không lấy nhầm tin nhắn mới sau này gắn vào đây
+        rowEl.dataset.fbUnsendOldNotice = 'true';
       }
     });
 
-    // Cập nhật Snapshot mới (giữ lại các tin nhắn khi vẫn đang trong cùng khung chat)
-    if (newSnapshot.size > 0 || unsentNoticeEls.length > 0) {
-      visibleMessagesSnapshot = newSnapshot;
-    }
+    visibleMessagesSnapshot = currentSnapshot;
+    isInitialScanDone = true;
   }
 
   /**
-   * Chèn hộp hiển thị nội dung tin nhắn gốc ngay bên dưới dòng "đã thu hồi một tin nhắn"
+   * Chèn hộp hiển thị nội dung tin nhắn gốc ngay bên dưới dòng "Bình đã xóa một tin nhắn"
    */
   function renderRestoredContentInDom(noticeEl, data) {
     const targetParent = noticeEl.parentElement || noticeEl;
@@ -527,7 +513,7 @@
         const img = document.createElement('img');
         img.src = url;
         img.className = 'fb-unsend-restored-img';
-        img.title = 'Nhấn để mở media gốc';
+        img.title = 'Nhấn để mở ảnh gốc';
         img.addEventListener('click', () => window.open(url, '_blank'));
         mediaContainer.appendChild(img);
       });
@@ -538,7 +524,7 @@
   }
 
   /**
-   * Hiển thị thông báo nhỏ (Toast) ở góc dưới bên trái khi phát hiện có người gỡ tin nhắn
+   * Hiển thị thông báo nổi (Toast) ở góc dưới màn hình khi có tin nhắn bị gỡ
    */
   function showUnsentToast(record) {
     if (!document.body) return;
@@ -576,7 +562,7 @@
   }
 
   // ============================================================================
-  // 3. KHỞI ĐỘNG MUTATION OBSERVER TRÊN DOM
+  // 3. KHỞI ĐỘNG MUTATION OBSERVER (SAU KHI TRANG TẢI XONG ĐỂ TRÁNH REACT ERROR #418)
   // ============================================================================
   let domScanScheduled = false;
   function scheduleDomScan() {
@@ -585,7 +571,7 @@
     requestMainWorldFiberScan();
     setTimeout(() => {
       domScanScheduled = false;
-      scanDomForMessagesAndUnsent();
+      scanChatMessagesInDom();
     }, 80);
   }
 
@@ -595,22 +581,25 @@
       return;
     }
 
-    scanDomForMessagesAndUnsent();
+    // Đợi 1 giây sau khi trang khởi tạo xong để không ảnh hưởng quá trình Hydrate của React (#418)
+    setTimeout(() => {
+      scanChatMessagesInDom();
 
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        if (mutation.type === 'childList' || mutation.type === 'characterData') {
-          scheduleDomScan();
-          break;
+      const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          if (mutation.type === 'childList' || mutation.type === 'characterData') {
+            scheduleDomScan();
+            break;
+          }
         }
-      }
-    });
+      });
 
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      characterData: true
-    });
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true
+      });
+    }, 1000);
   }
 
   loadFromStorage();

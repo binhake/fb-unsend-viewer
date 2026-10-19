@@ -1,10 +1,9 @@
 /**
  * injected.js - Chạy trong MAIN world ở thời điểm document_start trên facebook.com
  * Nhiệm vụ:
- * 1. Đón lõng (Hook) cả Chat thường/Nhóm (WebSocket, Lightspeed JSON) VÀ Chat mã hóa đầu cuối E2EE
- *    (MessagePort, SharedWorker, Worker, IndexedDB, React Fiber).
- * 2. Hỗ trợ mọi định dạng Message ID (cả "mid.$..." lẫn ID số/chuỗi của E2EE Armadillo/MAW).
- * 3. Phát hiện tin nhắn mới và sự kiện thu hồi (unsend), gửi sang content.js.
+ * 1. Đón lõng (Hook) các tin nhắn MỚI và sự kiện GỠ/XÓA tin nhắn thời gian thực.
+ * 2. Bỏ qua các gói dữ liệu đồng bộ lịch sử cũ khi vừa mở trang để không báo động giả.
+ * 3. Hỗ trợ cả câu thông báo "đã xóa một tin nhắn", "đã thu hồi một tin nhắn", "đã gỡ một tin nhắn".
  */
 
 (function () {
@@ -12,33 +11,36 @@
   window.__FB_UNSEND_INJECTED__ = true;
 
   const LOG_PREFIX = '[FB-Unsend-Tracker]';
-  console.log(`${LOG_PREFIX} Đã kích hoạt bộ theo dõi dữ liệu ngầm v2.0 (Hỗ trợ E2EE + Lightspeed).`);
+  const PAGE_LOAD_TIME = Date.now();
+  console.log(`${LOG_PREFIX} Đã kích hoạt bộ theo dõi dữ liệu ngầm v2.1.`);
 
-  // Bộ nhớ lưu các tin nhắn đã bắt được theo Message ID
   // Map: messageId -> { messageId, text, senderId, threadId, attachments, timestamp, capturedAt, isUnsent }
   const capturedMessages = new Map();
-
-  // Lưu thêm bảng tra cứu phụ theo offlineThreadingId / externalId nếu một tin nhắn có nhiều mã ID
   const aliasIdMap = new Map();
-
-  // WeakSet để đánh dấu các mảng/object đã quét qua, tránh lặp log
   const processedNodes = new WeakSet();
 
-  // Mẫu câu thông báo khi tin nhắn bị thu hồi (Tiếng Việt & Tiếng Anh)
+  // Mẫu câu thông báo khi tin nhắn bị thu hồi / xóa (Bao gồm "đã xóa một tin nhắn" trên giao diện FB mới)
   const UNSEND_PATTERNS = [
+    /đã xóa một tin nhắn/i,
+    /đã xoá một tin nhắn/i,
+    /bạn đã xóa một tin nhắn/i,
+    /bạn đã xoá một tin nhắn/i,
     /đã thu hồi một tin nhắn/i,
     /bạn đã thu hồi một tin nhắn/i,
     /đã gỡ một tin nhắn/i,
     /bạn đã gỡ một tin nhắn/i,
     /tin nhắn đã bị thu hồi/i,
     /tin nhắn đã được thu hồi/i,
+    /tin nhắn đã bị xóa/i,
     /unsent a message/i,
     /you unsent a message/i,
+    /deleted a message/i,
+    /you deleted a message/i,
     /removed a message/i,
     /message was unsent/i
   ];
 
-  // Các thông báo hệ thống cố định không phải là nội dung tin nhắn
+  // Các thông báo hệ thống cố định không phải là nội dung tin nhắn người dùng
   const SYSTEM_NOTICE_PATTERNS = [
     /Tin nhắn này đã bị gỡ do không tuân thủ Tiêu chuẩn cộng đồng/i,
     /Mọi thành viên mới của đoạn chat đều có thể xem lịch sử chat/i,
@@ -46,15 +48,26 @@
     /đã rời khỏi nhóm/i,
     /đã tạo nhóm chat/i,
     /đã đặt tên đoạn chat là/i,
+    /Đoạn chat đã được đặt tên là/i,
     /Bạn đã thêm .* vào đoạn chat/i,
+    /đã thêm .* vào đoạn chat/i,
+    /đã xoá bạn khỏi nhóm/i,
+    /đã xóa bạn khỏi nhóm/i,
     /Được mã hóa đầu cuối/i,
     /Tin nhắn và cuộc gọi được bảo mật bằng tính năng mã hóa đầu cuối/i,
-    /End-to-end encrypted/i
+    /End-to-end encrypted/i,
+    /Đã bày tỏ cảm xúc .* về tin nhắn/i,
+    /reacted .* to your message/i,
+    /^Tìm hiểu thêm$/i,
+    /^Like, thumbs up$/i,
+    /^Telegram sticker$/i
   ];
 
   function isUnsendNoticeText(str) {
     if (!str || typeof str !== 'string') return false;
-    return UNSEND_PATTERNS.some((regex) => regex.test(str.trim()));
+    const trimmed = str.trim();
+    if (trimmed.length === 0 || trimmed.length > 120) return false;
+    return UNSEND_PATTERNS.some((regex) => regex.test(trimmed));
   }
 
   function isSystemNoticeText(str) {
@@ -62,15 +75,20 @@
     return SYSTEM_NOTICE_PATTERNS.some((regex) => regex.test(str.trim()));
   }
 
-  /**
-   * Kiểm tra xem một chuỗi có phải là mã kỹ thuật / tên hàm / ID nội bộ của Facebook hay không
-   */
   function isTechnicalString(str) {
     if (!str || typeof str !== 'string') return true;
     const trimmed = str.trim();
     if (trimmed.length === 0) return true;
 
     if (isSystemNoticeText(trimmed)) return true;
+
+    // Loại bỏ các chuỗi JSON cấu hình nội bộ như {"contextual_menu_actions":...} hoặc {}
+    if (
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ) {
+      return true;
+    }
 
     if (
       trimmed.startsWith('mid.$') ||
@@ -91,7 +109,6 @@
       return true;
     }
 
-    // Dãy số ID 64-bit dài (12-25 chữ số) là ID kỹ thuật chứ không phải văn bản thường
     if (/^\d{12,25}$/.test(trimmed)) {
       return true;
     }
@@ -155,11 +172,32 @@
   }
 
   /**
-   * Lưu hoặc cập nhật tin nhắn bắt được (hỗ trợ cả Chat thường và Chat mã hóa E2EE)
+   * Kiểm tra xem timestamp của tin nhắn có phải là tin nhắn cũ từ lịch sử (trước khi mở trang quá 5 phút) không
    */
+  function isOldHistoricalTimestamp(ts) {
+    if (!ts || typeof ts !== 'number') return false;
+    // Nếu tin nhắn có timestamp cũ hơn thời điểm mở trang quá 5 phút -> là tin nhắn lịch sử cũ
+    return ts > 1577836800000 && ts < PAGE_LOAD_TIME - 5 * 60 * 1000;
+  }
+
   function registerCapturedMessage(msgData) {
-    let { messageId, altIds, text, senderId, threadId, senderName, attachments, timestamp, source } = msgData;
+    let {
+      messageId,
+      altIds,
+      text,
+      senderId,
+      threadId,
+      senderName,
+      attachments,
+      timestamp,
+      source
+    } = msgData;
     if (!messageId) return;
+
+    // Bỏ qua các tin nhắn cũ từ lịch sử để không làm rác Console và bộ nhớ
+    if (timestamp && isOldHistoricalTimestamp(timestamp)) {
+      return;
+    }
 
     messageId = resolveCanonicalMessageId(messageId);
     if (Array.isArray(altIds)) {
@@ -171,7 +209,10 @@
     }
 
     if (text && isUnsendNoticeText(text)) {
-      triggerMessageUnsent(messageId, { senderId, threadId, unsendNotice: text, source });
+      // Chỉ báo gỡ nếu tin nhắn này đã từng được lưu trước đó trong phiên
+      if (capturedMessages.has(messageId)) {
+        triggerMessageUnsent(messageId, { senderId, threadId, unsendNotice: text, source });
+      }
       return;
     }
 
@@ -216,34 +257,26 @@
 
     if (isActuallyNew) {
       console.log(
-        `${LOG_PREFIX} 📩 Đã lưu tin nhắn [${messageId}] (${updatedRecord.source}):`,
+        `${LOG_PREFIX} 📩 Đã lưu tin nhắn mới [${messageId}] (${updatedRecord.source}):`,
         updatedRecord.text || `(Đính kèm: ${updatedRecord.attachments.length} media)`
       );
       emitToContentScript('FB_MSG_CAPTURED', updatedRecord);
     }
   }
 
-  /**
-   * Đánh dấu một tin nhắn đã bị gỡ và báo ngay cho content.js
-   */
   function triggerMessageUnsent(rawMessageId, extraInfo = {}) {
     const messageId = resolveCanonicalMessageId(rawMessageId);
     if (!messageId) return;
 
     const existing = capturedMessages.get(messageId);
-    if (existing?.isUnsent) return;
+    // Chỉ kích hoạt gỡ nếu tin nhắn này thực sự đã được bắt trước đó và có nội dung, tránh báo động giả cho tin nhắn cũ
+    if (!existing || existing.isUnsent) return;
+    if (!existing.text && (!existing.attachments || existing.attachments.length === 0)) return;
 
     const record = {
-      messageId,
-      text: existing?.text || extraInfo.fallbackText || '',
-      senderId: existing?.senderId || extraInfo.senderId || '',
-      threadId: existing?.threadId || extraInfo.threadId || '',
-      senderName: existing?.senderName || extraInfo.senderName || '',
-      attachments: existing?.attachments || extraInfo.attachments || [],
-      timestamp: existing?.timestamp || Date.now(),
-      capturedAt: existing?.capturedAt || Date.now(),
+      ...existing,
       unsentAt: Date.now(),
-      source: extraInfo.source || existing?.source || 'unknown',
+      source: extraInfo.source || existing.source || 'unknown',
       isUnsent: true
     };
 
@@ -251,21 +284,18 @@
 
     console.log(
       `${LOG_PREFIX} 🚨 PHÁT HIỆN GỠ TIN NHẮN [${messageId}]! Nội dung gốc:`,
-      record.text ||
-        (record.attachments.length > 0
-          ? `[Media: ${record.attachments.join(', ')}]`
-          : '(Đang đối chiếu vị trí trên khung chat...)')
+      record.text || `[Media: ${record.attachments.join(', ')}]`
     );
 
     emitToContentScript('FB_MSG_UNSENT', record);
   }
 
   // ============================================================================
-  // BỘ PHÂN TÍCH 1: Cây lệnh Lightspeed & Mảng dữ liệu E2EE (MAW / ReStore)
+  // BỘ PHÂN TÍCH 1: Cây lệnh Lightspeed
   // ============================================================================
   function inspectLightspeedNode(
     node,
-    context = { fromRealtime: false, currentFunc: '', packetHasUnsendText: false, source: 'ls' }
+    context = { fromRealtime: false, currentFunc: '', source: 'ls' }
   ) {
     if (!node || typeof node !== 'object') return;
     if (processedNodes.has(node)) return;
@@ -274,7 +304,6 @@
     if (Array.isArray(node)) {
       let currentFunc = context.currentFunc;
 
-      // Nhận diện lời gọi hàm Lightspeed [5, "funcName", ...] hoặc mảng lệnh E2EE ["funcName", ...]
       if (node.length >= 2 && node[0] === 5 && typeof node[1] === 'string') {
         currentFunc = node[1];
       } else if (
@@ -285,18 +314,17 @@
         currentFunc = node[0];
       }
 
+      // Bỏ qua hoàn toàn hàm đồng bộ lịch sử cũ (insertNewMessageRange) để không tải lại tin nhắn cũ rích
+      if (currentFunc === 'insertNewMessageRange') {
+        return;
+      }
+
       let directMsgIds = [];
       let directAltIds = [];
       let directTextLiterals = [];
       let directMediaUrls = [];
       let directI64Values = [];
-      let nullMarkerCount = 0;
       let hasUnsendNoticeInNode = false;
-
-      const isMessageRelatedFunc =
-        /insertNewMessageRange|upsertMessage|insertMessage|replaceOptimisticMessage|deleteThenInsertMessage|markMessageUnsent|handleUnsendMessage|deleteMessage|updateMessage|setMessageText|maw|armadillo/i.test(
-          currentFunc
-        );
 
       for (let i = 0; i < node.length; i++) {
         const item = node[i];
@@ -311,7 +339,6 @@
           } else if (trimmed.startsWith('ee.mid.$')) {
             directAltIds.push(trimmed.replace(/^ee\./, ''));
           } else if (/^\d{15,22}$/.test(trimmed)) {
-            // Trong E2EE & Lightspeed, chuỗi số 15-22 chữ số thường là offlineThreadingId / messageId
             directAltIds.push(trimmed);
           } else if (isUnsendNoticeText(trimmed)) {
             hasUnsendNoticeInNode = true;
@@ -328,21 +355,16 @@
               }
             }
           }
-        } else if (Array.isArray(item)) {
-          if (item.length === 1 && item[0] === 9) {
-            nullMarkerCount++;
-          } else if (item.length === 2 && item[0] === 19 && typeof item[1] === 'string') {
-            directI64Values.push(item[1]);
-          }
+        } else if (
+          Array.isArray(item) &&
+          item.length === 2 &&
+          item[0] === 19 &&
+          typeof item[1] === 'string'
+        ) {
+          directI64Values.push(item[1]);
         }
       }
 
-      // Trong E2EE, đôi khi không có mid.$ mà dùng trực tiếp chuỗi số 64-bit làm ID tin nhắn trong hàm Message
-      if (directMsgIds.length === 0 && isMessageRelatedFunc && directAltIds.length > 0) {
-        directMsgIds.push(directAltIds[0]);
-      }
-
-      // Kiểm tra xem có bất kỳ ID nào trong node này trùng với tin nhắn đã lưu trước đó không
       if (directMsgIds.length === 0) {
         for (const candidateId of [...directAltIds, ...directI64Values]) {
           const resolved = resolveCanonicalMessageId(candidateId);
@@ -362,10 +384,16 @@
         for (const val of directI64Values) {
           const num = Number(val);
           if (num > 1577836800000 && num < 2051222400000) {
-            if (!timestamp) timestamp = num;
+            // Lấy giá trị timestamp hợp lệ nhỏ nhất (thường là thời điểm tạo tin nhắn gốc)
+            if (!timestamp || num < timestamp) timestamp = num;
           } else if (val.length >= 5 && val !== '0') {
             ids.push(val);
           }
+        }
+
+        // Nếu phát hiện timestamp là của tin nhắn lịch sử cũ từ xưa -> bỏ qua ngay!
+        if (timestamp && isOldHistoricalTimestamp(timestamp)) {
+          return;
         }
 
         const threadId = ids[0] || '';
@@ -376,13 +404,7 @@
             currentFunc
           );
 
-        const isReactionOrReadFunc =
-          /Reaction|ReadReceipt|MarkRead|Typing|Presence|Delivery|Optimistic/i.test(
-            currentFunc
-          );
-
         const resolvedId = resolveCanonicalMessageId(primaryId);
-        const existingMsg = capturedMessages.get(resolvedId);
 
         if (hasUnsendNoticeInNode || isExplicitUnsendFunc) {
           triggerMessageUnsent(resolvedId, {
@@ -401,28 +423,12 @@
             timestamp: timestamp || Date.now(),
             source: context.source
           });
-        } else if (
-          existingMsg &&
-          !existingMsg.isUnsent &&
-          !isReactionOrReadFunc &&
-          (context.packetHasUnsendText ||
-            (context.fromRealtime &&
-              Date.now() - existingMsg.capturedAt > 400 &&
-              (nullMarkerCount >= 2 ||
-                /delete|remove|clear|update|upsert|insert|admin|replace/i.test(currentFunc))))
-        ) {
-          triggerMessageUnsent(resolvedId, {
-            threadId,
-            senderId,
-            source: context.source
-          });
         }
       }
 
       const nextContext = {
         fromRealtime: context.fromRealtime,
         currentFunc,
-        packetHasUnsendText: context.packetHasUnsendText || hasUnsendNoticeInNode,
         source: context.source
       };
 
@@ -450,7 +456,7 @@
   function inspectPlainObject(
     obj,
     depth = 0,
-    context = { fromRealtime: false, currentFunc: '', packetHasUnsendText: false, source: 'obj' }
+    context = { fromRealtime: false, currentFunc: '', source: 'obj' }
   ) {
     if (!obj || typeof obj !== 'object' || depth > 7) return;
     if (depth === 0) {
@@ -463,7 +469,6 @@
         inspectLightspeedNode(obj.step, context);
       }
 
-      // Trích xuất ID tin nhắn cho cả chuẩn thường (mid.$) VÀ chuẩn E2EE (externalId, offlineThreadingId, messageId, id...)
       const rawMsgId =
         obj.messageId ||
         obj.message_id ||
@@ -481,15 +486,22 @@
           obj.body !== undefined ||
           obj.plaintext !== undefined ||
           obj.isUnsent !== undefined ||
-          obj.unsentTimestampMs !== undefined ||
-          obj.threadKey !== undefined ||
-          obj.threadId !== undefined)
+          obj.unsentTimestampMs !== undefined)
           ? obj.id
           : null);
 
       if (rawMsgId !== null && rawMsgId !== undefined) {
         const msgId = String(rawMsgId).trim();
         if (msgId.length >= 4) {
+          const timestamp = Number(
+            obj.timestampMs || obj.timestamp_ms || obj.timestamp || Date.now()
+          );
+
+          // Bỏ qua nếu là bản ghi tin nhắn cũ trong lịch sử
+          if (isOldHistoricalTimestamp(timestamp)) {
+            return;
+          }
+
           const altIds = [
             obj.messageId,
             obj.externalId,
@@ -516,9 +528,6 @@
             obj.threadId || obj.thread_id || obj.threadKey || obj.threadFbId || obj.chatId || ''
           );
           const senderName = String(obj.senderName || obj.authorName || obj.title || '');
-          const timestamp = Number(
-            obj.timestampMs || obj.timestamp_ms || obj.timestamp || Date.now()
-          );
 
           const isUnsentFlag =
             obj.isUnsent === true ||
@@ -577,7 +586,6 @@
         }
       }
 
-      // Duyệt các thuộc tính con (bỏ qua các node DOM hoặc window để tránh đệ quy vô tận)
       if (obj instanceof Node || obj === window) return;
 
       const keys = Object.keys(obj);
@@ -597,18 +605,13 @@
           (val.includes('"step"') ||
             val.includes('mid.$') ||
             val.includes('wmid.') ||
-            val.includes('Message') ||
-            val.includes('Unsent') ||
+            val.includes('upsertMessage') ||
+            val.includes('deleteThenInsertMessage') ||
             isUnsendNoticeText(val))
         ) {
           try {
-            const hasUnsendInStr =
-              isUnsendNoticeText(val) || /deleteThenInsertMessage|Unsent/i.test(val);
             const parsed = originalJSONParse(val);
-            inspectPlainObject(parsed, depth + 1, {
-              ...context,
-              packetHasUnsendText: context.packetHasUnsendText || hasUnsendInStr
-            });
+            inspectPlainObject(parsed, depth + 1, context);
           } catch (_) {}
         }
       }
@@ -616,7 +619,7 @@
   }
 
   // ============================================================================
-  // BỘ PHÂN TÍCH 3: Quét trực tiếp React Fiber (__reactFiber$) cho tin nhắn E2EE
+  // BỘ PHÂN TÍCH 3: Quét React Fiber (__reactFiber$) chỉ trong vùng khung chat
   // ============================================================================
   function extractMessageFromReactFiber(domNode) {
     if (!domNode || typeof domNode !== 'object') return null;
@@ -632,7 +635,6 @@
       while (fiber && steps < 25) {
         const props = fiber.memoizedProps || fiber.pendingProps;
         if (props && typeof props === 'object') {
-          // Kiểm tra các cấu trúc prop phổ biến của Messenger Web (Comet / MAW E2EE)
           const msgObj =
             props.message ||
             props.msg ||
@@ -655,7 +657,8 @@
               (typeof msgObj.message === 'string' ? msgObj.message : msgObj.message?.text);
             const isUnsent =
               Boolean(msgObj.isUnsent || msgObj.unsent || msgObj.unsentTimestampMs) ||
-              msgObj.messageRenderingType === 2;
+              msgObj.messageRenderingType === 2 ||
+              (typeof text === 'string' && isUnsendNoticeText(text));
 
             if (id) {
               return {
@@ -663,8 +666,7 @@
                 text: typeof text === 'string' ? text : '',
                 senderId: String(msgObj.senderId || msgObj.author || ''),
                 threadId: String(msgObj.threadId || msgObj.threadKey || ''),
-                isUnsent,
-                raw: msgObj
+                isUnsent
               };
             }
           }
@@ -676,27 +678,25 @@
     return null;
   }
 
-  // Lắng nghe yêu cầu quét React Fiber từ content.js hoặc tự động quét các dòng tin nhắn trên DOM
   function scanVisibleChatFiber() {
     if (!document.body) return;
     try {
+      // Chỉ quét các dòng tin nhắn thực sự có data-scope="messages_table"
       const elements = document.querySelectorAll(
-        'div[role="row"], div[role="gridcell"], div[data-scope="messages_table"], div[dir="auto"]'
+        'div[data-scope="messages_table"], div[data-scope="messages_table"] div[dir="auto"]'
       );
       elements.forEach((el) => {
         const fiberMsg = extractMessageFromReactFiber(el);
         if (fiberMsg && fiberMsg.messageId) {
-          const rowContainer =
-            el.closest('div[role="row"], div[role="gridcell"], div[data-scope="messages_table"]') ||
-            el.parentElement;
-          if (rowContainer && rowContainer instanceof HTMLElement) {
+          const rowContainer = el.closest('div[data-scope="messages_table"]') || el;
+          if (rowContainer instanceof HTMLElement) {
             rowContainer.dataset.fbMsgId = fiberMsg.messageId;
           }
 
           if (fiberMsg.isUnsent) {
             triggerMessageUnsent(fiberMsg.messageId, { source: 'react-fiber' });
           } else if (fiberMsg.text && !isTechnicalString(fiberMsg.text)) {
-            if (rowContainer && rowContainer instanceof HTMLElement && !rowContainer.dataset.fbUnsendSavedText) {
+            if (rowContainer instanceof HTMLElement && !rowContainer.dataset.fbUnsendSavedText) {
               rowContainer.dataset.fbUnsendSavedText = fiberMsg.text;
             }
             registerCapturedMessage({
@@ -712,7 +712,6 @@
     } catch (_) {}
   }
 
-  // Cho phép content.js yêu cầu quét Fiber ngay khi DOM có biến động
   window.addEventListener('message', (event) => {
     if (event.source !== window || !event.data) return;
     if (event.data.source === 'FB_UNSEND_EXTENSION_CONTENT' && event.data.type === 'SCAN_FIBER') {
@@ -721,62 +720,16 @@
   });
 
   // ============================================================================
-  // TẦNG HOOK 1: Chặn đọc JSON.parse
+  // TẦNG HOOK 1: Chặn đọc WebSocket (Chỉ xử lý các gói thời gian thực)
   // ============================================================================
   const originalJSONParse = JSON.parse;
-  JSON.parse = function (text, reviver) {
-    const result = originalJSONParse.apply(this, arguments);
-    try {
-      if (
-        typeof text === 'string' &&
-        (text.includes('mid.$') ||
-          text.includes('wmid.') ||
-          text.includes('upsertMessage') ||
-          text.includes('insertNewMessageRange') ||
-          text.includes(' insertMessage') ||
-          text.includes('deleteThenInsertMessage') ||
-          text.includes('deleteMessage') ||
-          text.includes('markMessageUnsent') ||
-          text.includes('replaceOptimisticMessage') ||
-          text.includes('isUnsent') ||
-          text.includes('unsentTimestampMs') ||
-          text.includes('offlineThreadingId') ||
-          isUnsendNoticeText(text))
-      ) {
-        const packetHasUnsendText =
-          isUnsendNoticeText(text) ||
-          /deleteThenInsertMessage|markMessageUnsent|handleUnsendMessage/i.test(text);
-
-        queueMicrotask(() => {
-          try {
-            inspectLightspeedNode(result, {
-              fromRealtime: false,
-              currentFunc: '',
-              packetHasUnsendText,
-              source: 'json'
-            });
-          } catch (_) {}
-        });
-      }
-    } catch (_) {}
-    return result;
-  };
-
-  // ============================================================================
-  // TẦNG HOOK 2: Chặn đọc WebSocket (Cả Chat thường & WebSocket E2EE)
-  // ============================================================================
   const OriginalWebSocket = window.WebSocket;
   const textDecoder = new TextDecoder('utf-8', { fatal: false });
 
   function extractJsonObjectsFromString(rawStr) {
-    const packetHasUnsendText =
-      isUnsendNoticeText(rawStr) ||
-      /deleteThenInsertMessage|markMessageUnsent|handleUnsendMessage|deleteMessage/i.test(rawStr);
-
     const wsContext = {
       fromRealtime: true,
       currentFunc: '',
-      packetHasUnsendText,
       source: 'ws'
     };
 
@@ -821,8 +774,10 @@
         decoded &&
         (decoded.includes('mid.$') ||
           decoded.includes('wmid.') ||
-          decoded.includes('"step"') ||
-          decoded.includes('Message') ||
+          decoded.includes('upsertMessage') ||
+          decoded.includes('insertMessage') ||
+          decoded.includes('deleteThenInsertMessage') ||
+          decoded.includes('markMessageUnsent') ||
           isUnsendNoticeText(decoded))
       ) {
         extractJsonObjectsFromString(decoded);
@@ -848,12 +803,11 @@
   Object.assign(window.WebSocket, OriginalWebSocket);
 
   // ============================================================================
-  // TẦNG HOOK 3: Chặn đọc IndexedDB (put / add / delete cho bản ghi E2EE)
+  // TẦNG HOOK 2: Chặn đọc IndexedDB & MessagePort cho E2EE
   // ============================================================================
   if (window.IDBObjectStore) {
     const origPut = IDBObjectStore.prototype.put;
     const origAdd = IDBObjectStore.prototype.add;
-    const origDelete = IDBObjectStore.prototype.delete;
 
     IDBObjectStore.prototype.put = function (value, key) {
       try {
@@ -863,7 +817,6 @@
               inspectPlainObject(value, 0, {
                 fromRealtime: true,
                 currentFunc: 'IDB.put',
-                packetHasUnsendText: false,
                 source: 'idb'
               });
             } catch (_) {}
@@ -881,7 +834,6 @@
               inspectPlainObject(value, 0, {
                 fromRealtime: true,
                 currentFunc: 'IDB.add',
-                packetHasUnsendText: false,
                 source: 'idb'
               });
             } catch (_) {}
@@ -890,26 +842,8 @@
       } catch (_) {}
       return origAdd.apply(this, arguments);
     };
-
-    IDBObjectStore.prototype.delete = function (key) {
-      try {
-        if (typeof key === 'string' || typeof key === 'number') {
-          const strKey = String(key);
-          const resolved = resolveCanonicalMessageId(strKey);
-          if (capturedMessages.has(resolved)) {
-            queueMicrotask(() => {
-              triggerMessageUnsent(resolved, { source: 'idb-delete' });
-            });
-          }
-        }
-      } catch (_) {}
-      return origDelete.apply(this, arguments);
-    };
   }
 
-  // ============================================================================
-  // TẦNG HOOK 4: Chặn đọc MessagePort, SharedWorker & Worker (Kênh E2EE MAW)
-  // ============================================================================
   function inspectWorkerChannelData(data, sourceLabel) {
     if (!data) return;
     queueMicrotask(() => {
@@ -919,33 +853,21 @@
             inspectLightspeedNode(data, {
               fromRealtime: true,
               currentFunc: sourceLabel,
-              packetHasUnsendText: false,
               source: sourceLabel
             });
           } else {
             inspectPlainObject(data, 0, {
               fromRealtime: true,
               currentFunc: sourceLabel,
-              packetHasUnsendText: false,
               source: sourceLabel
             });
           }
-        } else if (typeof data === 'string' && data.startsWith('{')) {
-          const parsed = originalJSONParse(data);
-          inspectPlainObject(parsed, 0, {
-            fromRealtime: true,
-            currentFunc: sourceLabel,
-            packetHasUnsendText: false,
-            source: sourceLabel
-          });
         }
       } catch (_) {}
     });
   }
 
-  // Hook MessagePort.prototype (Cầu nối chính giữa E2EE SharedWorker/Worker và Main Thread)
   if (window.MessagePort) {
-    const origPortPostMessage = MessagePort.prototype.postMessage;
     const origPortAddEventListener = MessagePort.prototype.addEventListener;
     const hookedPorts = new WeakSet();
 
@@ -956,12 +878,6 @@
         inspectWorkerChannelData(event.data, 'e2ee-port');
       });
     }
-
-    MessagePort.prototype.postMessage = function (message, transfer) {
-      ensurePortHooked(this);
-      inspectWorkerChannelData(message, 'e2ee-port-out');
-      return origPortPostMessage.apply(this, arguments);
-    };
 
     MessagePort.prototype.addEventListener = function (type, listener, options) {
       ensurePortHooked(this);
@@ -980,45 +896,5 @@
         }
       });
     }
-  }
-
-  // Hook SharedWorker
-  if (window.SharedWorker) {
-    const OrigSharedWorker = window.SharedWorker;
-    window.SharedWorker = function (scriptURL, options) {
-      const sw =
-        options !== undefined
-          ? new OrigSharedWorker(scriptURL, options)
-          : new OrigSharedWorker(scriptURL);
-      try {
-        if (sw.port) {
-          sw.port.addEventListener('message', (event) => {
-            inspectWorkerChannelData(event.data, 'e2ee-sharedworker');
-          });
-        }
-      } catch (_) {}
-      return sw;
-    };
-    window.SharedWorker.prototype = OrigSharedWorker.prototype;
-    Object.assign(window.SharedWorker, OrigSharedWorker);
-  }
-
-  // Hook Dedicated Worker
-  if (window.Worker) {
-    const OrigWorker = window.Worker;
-    window.Worker = function (scriptURL, options) {
-      const worker =
-        options !== undefined
-          ? new OrigWorker(scriptURL, options)
-          : new OrigWorker(scriptURL);
-      try {
-        worker.addEventListener('message', (event) => {
-          inspectWorkerChannelData(event.data, 'e2ee-worker');
-        });
-      } catch (_) {}
-      return worker;
-    };
-    window.Worker.prototype = OrigWorker.prototype;
-    Object.assign(window.Worker, OrigWorker);
   }
 })();
