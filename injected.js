@@ -1,9 +1,12 @@
 /**
  * injected.js - Chạy trong MAIN world ở thời điểm document_start trên facebook.com
  * Nhiệm vụ:
- * 1. Đón lõng (Hook) các tin nhắn MỚI và sự kiện GỠ/XÓA tin nhắn thời gian thực.
- * 2. Bỏ qua các gói dữ liệu đồng bộ lịch sử cũ khi vừa mở trang để không báo động giả.
- * 3. Hỗ trợ cả câu thông báo "đã xóa một tin nhắn", "đã thu hồi một tin nhắn", "đã gỡ một tin nhắn".
+ * 1. Hook trực tiếp vào hệ thống Module nội bộ của Facebook (window.__d):
+ *    - MAWVault (Giải mã chuỗi văn bản bị ẩn dưới dạng @@vault:... của đoạn chat E2EE Armadillo).
+ *    - LS*StoredProcedure (Các hàm nội bộ xử lý thêm/cập nhật/thu hồi tin nhắn sau khi giải mã).
+ *    - ReStore / MAW* (Cơ sở dữ liệu bảng messages trong bộ nhớ của Messenger E2EE & Lightspeed).
+ * 2. Hook WebSocket, IndexedDB và MessagePort để bắt mọi gói tin thời gian thực ở dưới nền
+ *    (hoạt động ngay cả khi đóng khung chat hoặc chuyển sang tab khác làm việc).
  */
 
 (function () {
@@ -12,14 +15,20 @@
 
   const LOG_PREFIX = '[FB-Unsend-Tracker]';
   const PAGE_LOAD_TIME = Date.now();
-  console.log(`${LOG_PREFIX} Đã kích hoạt bộ theo dõi dữ liệu ngầm v2.1.`);
+  console.log(
+    `${LOG_PREFIX} Đã kích hoạt bộ theo dõi mã nội bộ v3.0 (Hook __d + MAWVault + ReStore + Lightspeed).`
+  );
 
   // Map: messageId -> { messageId, text, senderId, threadId, attachments, timestamp, capturedAt, isUnsent }
   const capturedMessages = new Map();
   const aliasIdMap = new Map();
   const processedNodes = new WeakSet();
 
-  // Mẫu câu thông báo khi tin nhắn bị thu hồi / xóa (Bao gồm "đã xóa một tin nhắn" trên giao diện FB mới)
+  // Bảng lưu ánh xạ của MAWVault (Dành riêng cho tin nhắn mã hóa đầu cuối E2EE trên Facebook)
+  // Trong E2EE, Facebook dùng MAWVault để đổi chuỗi thật (plaintext) thành chuỗi "@@vault:..."
+  const vaultMap = new Map();
+  let mawUnvaultFn = null;
+
   const UNSEND_PATTERNS = [
     /đã xóa một tin nhắn/i,
     /đã xoá một tin nhắn/i,
@@ -40,7 +49,6 @@
     /message was unsent/i
   ];
 
-  // Các thông báo hệ thống cố định không phải là nội dung tin nhắn người dùng
   const SYSTEM_NOTICE_PATTERNS = [
     /Tin nhắn này đã bị gỡ do không tuân thủ Tiêu chuẩn cộng đồng/i,
     /Mọi thành viên mới của đoạn chat đều có thể xem lịch sử chat/i,
@@ -63,26 +71,46 @@
     /^Telegram sticker$/i
   ];
 
+  /**
+   * Giải mã chuỗi MAWVault (nếu chuỗi có dạng @@vault:... của E2EE)
+   */
+  function unvaultString(str) {
+    if (!str || typeof str !== 'string') return str;
+    if (vaultMap.has(str)) {
+      return vaultMap.get(str);
+    }
+    if (mawUnvaultFn && (str.startsWith('@@vault') || str.startsWith('vault:'))) {
+      try {
+        const res = mawUnvaultFn(str);
+        if (typeof res === 'string' && res !== str) {
+          vaultMap.set(str, res);
+          return res;
+        }
+      } catch (_) {}
+    }
+    return str;
+  }
+
   function isUnsendNoticeText(str) {
     if (!str || typeof str !== 'string') return false;
-    const trimmed = str.trim();
-    if (trimmed.length === 0 || trimmed.length > 120) return false;
-    return UNSEND_PATTERNS.some((regex) => regex.test(trimmed));
+    const realStr = unvaultString(str).trim();
+    if (realStr.length === 0 || realStr.length > 120) return false;
+    return UNSEND_PATTERNS.some((regex) => regex.test(realStr));
   }
 
   function isSystemNoticeText(str) {
     if (!str || typeof str !== 'string') return false;
-    return SYSTEM_NOTICE_PATTERNS.some((regex) => regex.test(str.trim()));
+    const realStr = unvaultString(str).trim();
+    return SYSTEM_NOTICE_PATTERNS.some((regex) => regex.test(realStr));
   }
 
   function isTechnicalString(str) {
     if (!str || typeof str !== 'string') return true;
-    const trimmed = str.trim();
+    const trimmed = unvaultString(str).trim();
     if (trimmed.length === 0) return true;
 
     if (isSystemNoticeText(trimmed)) return true;
 
-    // Loại bỏ các chuỗi JSON cấu hình nội bộ như {"contextual_menu_actions":...} hoặc {}
     if (
       (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
       (trimmed.startsWith('[') && trimmed.endsWith(']'))
@@ -91,6 +119,7 @@
     }
 
     if (
+      trimmed.startsWith('@@vault') ||
       trimmed.startsWith('mid.$') ||
       trimmed.startsWith('ee.mid.$') ||
       trimmed.startsWith('wmid.') ||
@@ -125,7 +154,7 @@
         /^[0-9a-f]{20,64}$/i.test(trimmed) ||
         /^[A-Za-z0-9+/=_-]{36,}$/.test(trimmed) ||
         /^[a-z0-9]+(_[a-z0-9]+)+$/i.test(trimmed) ||
-        /^(insert|upsert|update|delete|remove|handle|mark|set|clear|sync|fetch|verify|apply|replace|move|create|ensure|compute|process|execute|send|receive|check|truncate|populate|optimistic|lightspeed|armadillo|maw|wa)[A-Z][a-zA-Z0-9_]*$/.test(
+        /^(insert|upsert|update|delete|remove|handle|mark|set|clear|sync|fetch|verify|apply|replace|move|create|ensure|compute|process|execute|send|receive|check|truncate|populate|optimistic|lightspeed|armadillo|maw|wa|LS)[A-Z][a-zA-Z0-9_]*$/.test(
           trimmed
         ) ||
         /^(image|video|audio|application|text)\/[a-z0-9.+-]+$/i.test(trimmed) ||
@@ -142,7 +171,7 @@
 
   function extractMediaUrl(str) {
     if (!str || typeof str !== 'string') return null;
-    const trimmed = str.trim();
+    const trimmed = unvaultString(str).trim();
     if (/^https?:\/\/(scontent|video|cdn\.fbsbx\.com|lookaside)/i.test(trimmed)) {
       return trimmed;
     }
@@ -167,16 +196,12 @@
 
   function resolveCanonicalMessageId(id) {
     if (!id) return '';
-    const strId = String(id).trim();
+    const strId = unvaultString(String(id)).trim();
     return aliasIdMap.get(strId) || strId;
   }
 
-  /**
-   * Kiểm tra xem timestamp của tin nhắn có phải là tin nhắn cũ từ lịch sử (trước khi mở trang quá 5 phút) không
-   */
   function isOldHistoricalTimestamp(ts) {
     if (!ts || typeof ts !== 'number') return false;
-    // Nếu tin nhắn có timestamp cũ hơn thời điểm mở trang quá 5 phút -> là tin nhắn lịch sử cũ
     return ts > 1577836800000 && ts < PAGE_LOAD_TIME - 5 * 60 * 1000;
   }
 
@@ -194,7 +219,6 @@
     } = msgData;
     if (!messageId) return;
 
-    // Bỏ qua các tin nhắn cũ từ lịch sử để không làm rác Console và bộ nhớ
     if (timestamp && isOldHistoricalTimestamp(timestamp)) {
       return;
     }
@@ -202,23 +226,38 @@
     messageId = resolveCanonicalMessageId(messageId);
     if (Array.isArray(altIds)) {
       for (const alt of altIds) {
-        if (alt && String(alt) !== messageId) {
-          aliasIdMap.set(String(alt), messageId);
+        if (alt) {
+          const cleanAlt = unvaultString(String(alt)).trim();
+          if (cleanAlt && cleanAlt !== messageId) {
+            aliasIdMap.set(cleanAlt, messageId);
+          }
         }
       }
     }
 
-    if (text && isUnsendNoticeText(text)) {
-      // Chỉ báo gỡ nếu tin nhắn này đã từng được lưu trước đó trong phiên
+    const unvaultedText = typeof text === 'string' ? unvaultString(text) : '';
+
+    if (unvaultedText && isUnsendNoticeText(unvaultedText)) {
       if (capturedMessages.has(messageId)) {
-        triggerMessageUnsent(messageId, { senderId, threadId, unsendNotice: text, source });
+        triggerMessageUnsent(messageId, {
+          senderId,
+          threadId,
+          unsendNotice: unvaultedText,
+          source
+        });
       }
       return;
     }
 
     const cleanText =
-      text && !isTechnicalString(text) && !isUnsendNoticeText(text) ? text.trim() : '';
-    const cleanAttachments = Array.isArray(attachments) ? attachments.filter(Boolean) : [];
+      unvaultedText &&
+      !isTechnicalString(unvaultedText) &&
+      !isUnsendNoticeText(unvaultedText)
+        ? unvaultedText.trim()
+        : '';
+    const cleanAttachments = Array.isArray(attachments)
+      ? attachments.map(unvaultString).filter(Boolean)
+      : [];
 
     const existing = capturedMessages.get(messageId);
 
@@ -249,7 +288,7 @@
       attachments: mergedAttachments,
       timestamp: timestamp || existing?.timestamp || Date.now(),
       capturedAt: existing?.capturedAt || Date.now(),
-      source: source || existing?.source || 'ls',
+      source: source || existing?.source || 'internal',
       isUnsent: existing?.isUnsent || false
     };
 
@@ -257,7 +296,7 @@
 
     if (isActuallyNew) {
       console.log(
-        `${LOG_PREFIX} 📩 Đã lưu tin nhắn mới [${messageId}] (${updatedRecord.source}):`,
+        `${LOG_PREFIX} 📩 Đã bắt ngầm tin nhắn [${messageId}] (Nguồn: ${updatedRecord.source}):`,
         updatedRecord.text || `(Đính kèm: ${updatedRecord.attachments.length} media)`
       );
       emitToContentScript('FB_MSG_CAPTURED', updatedRecord);
@@ -269,26 +308,318 @@
     if (!messageId) return;
 
     const existing = capturedMessages.get(messageId);
-    // Chỉ kích hoạt gỡ nếu tin nhắn này thực sự đã được bắt trước đó và có nội dung, tránh báo động giả cho tin nhắn cũ
     if (!existing || existing.isUnsent) return;
     if (!existing.text && (!existing.attachments || existing.attachments.length === 0)) return;
 
     const record = {
       ...existing,
       unsentAt: Date.now(),
-      source: extraInfo.source || existing.source || 'unknown',
+      source: extraInfo.source || existing.source || 'internal',
       isUnsent: true
     };
 
     capturedMessages.set(messageId, record);
 
     console.log(
-      `${LOG_PREFIX} 🚨 PHÁT HIỆN GỠ TIN NHẮN [${messageId}]! Nội dung gốc:`,
+      `${LOG_PREFIX} 🚨 PHÁT HIỆN GỠ TIN NHẮN NGẦM [${messageId}] (Nguồn: ${record.source})! Nội dung gốc:`,
       record.text || `[Media: ${record.attachments.join(', ')}]`
     );
 
     emitToContentScript('FB_MSG_UNSENT', record);
   }
+
+  // ============================================================================
+  // TẦNG HOOK CỐT LÕI: HỆ THỐNG MODULE NỘI BỘ FACEBOOK (window.__d)
+  // Đón lõng MAWVault, LS*StoredProcedure, ReStore và MAW* cho cả E2EE & Thường
+  // ============================================================================
+
+  /**
+   * Phân tích danh sách tham số (arguments) được truyền vào một hàm Stored Procedure nội bộ
+   * Ví dụ: LSUpsertMessageStoredProcedure, LSDeleteThenInsertMessageStoredProcedure, MAW...
+   */
+  function inspectInternalProcedureCall(moduleName, args) {
+    if (!args || args.length === 0) return;
+
+    // Bỏ qua hàm đồng bộ lịch sử cũ
+    if (/InsertNewMessageRange/i.test(moduleName)) return;
+
+    let msgIds = [];
+    let altIds = [];
+    let texts = [];
+    let mediaUrls = [];
+    let i64Numbers = [];
+    let hasUnsendNotice = false;
+    let hasNullTextAfterExisting = false;
+
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      if (arg === null || arg === undefined) {
+        hasNullTextAfterExisting = true;
+        continue;
+      }
+
+      if (typeof arg === 'string') {
+        const unvaulted = unvaultString(arg).trim();
+        if (
+          unvaulted.startsWith('mid.$') ||
+          unvaulted.startsWith('wmid.') ||
+          unvaulted.startsWith('otid.')
+        ) {
+          msgIds.push(unvaulted);
+        } else if (unvaulted.startsWith('ee.mid.$')) {
+          altIds.push(unvaulted.replace(/^ee\./, ''));
+        } else if (/^\d{15,22}$/.test(unvaulted)) {
+          altIds.push(unvaulted);
+        } else if (isUnsendNoticeText(unvaulted)) {
+          hasUnsendNotice = true;
+        } else {
+          const mUrl = extractMediaUrl(unvaulted);
+          if (mUrl) {
+            mediaUrls.push(mUrl);
+          } else if (!isTechnicalString(unvaulted)) {
+            texts.push(unvaulted);
+          }
+        }
+      } else if (typeof arg === 'number') {
+        if (arg > 1577836800000 && arg < 2051222400000) {
+          i64Numbers.push(String(arg));
+        }
+      } else if (typeof arg === 'object') {
+        if (Array.isArray(arg)) {
+          // Kiểu I64 trong Lightspeed runtime: [high32, low32] hoặc [19, "1000..."]
+          if (arg.length === 2 && arg[0] === 19 && typeof arg[1] === 'string') {
+            i64Numbers.push(arg[1]);
+          } else {
+            inspectLightspeedNode(arg, {
+              fromRealtime: true,
+              currentFunc: moduleName,
+              source: `module:${moduleName}`
+            });
+          }
+        } else {
+          // Nếu đối số là một Object (ví dụ bản ghi ReStore hoặc tham số đóng gói của MAW E2EE)
+          inspectPlainObject(arg, 0, {
+            fromRealtime: true,
+            currentFunc: moduleName,
+            source: `module:${moduleName}`
+          });
+        }
+      }
+    }
+
+    // Với E2EE, đôi khi ID tin nhắn là chuỗi số 15-22 chữ số nằm trong altIds
+    if (msgIds.length === 0 && altIds.length > 0) {
+      // Kiểm tra xem có ID nào đã tồn tại trong capturedMessages không
+      const matchedExisting = altIds.find((id) =>
+        capturedMessages.has(resolveCanonicalMessageId(id))
+      );
+      if (matchedExisting) {
+        msgIds.push(matchedExisting);
+      } else if (/InsertMessage|UpsertMessage|ReplaceOptimisticMessage/i.test(moduleName)) {
+        msgIds.push(altIds[0]);
+      }
+    }
+
+    if (msgIds.length > 0) {
+      const primaryId = msgIds[0];
+      const resolvedId = resolveCanonicalMessageId(primaryId);
+
+      const isUnsendProcedure =
+        /MarkMessageUnsent|HandleUnsendMessage|DeleteMessage|Unsend|Revoke|Tombstone/i.test(
+          moduleName
+        );
+      const isDeleteThenInsert = /DeleteThenInsertMessage|UpsertMessage|UpdateMessage/i.test(
+        moduleName
+      );
+
+      if (isUnsendProcedure || hasUnsendNotice) {
+        triggerMessageUnsent(resolvedId, { source: `module:${moduleName}` });
+      } else if (texts.length > 0 || mediaUrls.length > 0) {
+        registerCapturedMessage({
+          messageId: primaryId,
+          altIds: [...msgIds, ...altIds],
+          text: texts[0] || '',
+          attachments: mediaUrls,
+          timestamp: Date.now(),
+          source: `module:${moduleName}`
+        });
+      } else if (
+        isDeleteThenInsert &&
+        capturedMessages.has(resolvedId) &&
+        texts.length === 0 &&
+        hasNullTextAfterExisting
+      ) {
+        // Khi hàm DeleteThenInsertMessage hoặc UpsertMessage được gọi lại trên một tin nhắn đã lưu
+        // nhưng tham số text truyền vào là null/rỗng -> Tin nhắn vừa bị thu hồi!
+        triggerMessageUnsent(resolvedId, { source: `module:${moduleName}` });
+      }
+    }
+  }
+
+  /**
+   * Bọc (Wrap) đối tượng bảng dữ liệu của ReStore (bảng messages, attachments)
+   */
+  const hookedTables = new WeakSet();
+  function wrapReStoreTable(tableObj, tableName) {
+    if (!tableObj || typeof tableObj !== 'object' || hookedTables.has(tableObj)) return;
+    hookedTables.add(tableObj);
+
+    const writeMethods = ['put', 'upsert', 'add', 'replace'];
+    writeMethods.forEach((method) => {
+      if (typeof tableObj[method] === 'function') {
+        const origMethod = tableObj[method];
+        tableObj[method] = function (record) {
+          try {
+            if (record && typeof record === 'object') {
+              queueMicrotask(() => {
+                inspectPlainObject(record, 0, {
+                  fromRealtime: true,
+                  currentFunc: `ReStore.${tableName}.${method}`,
+                  source: `ReStore:${tableName}`
+                });
+              });
+            }
+          } catch (_) {}
+          return origMethod.apply(this, arguments);
+        };
+      }
+    });
+
+    if (typeof tableObj.delete === 'function') {
+      const origDel = tableObj.delete;
+      tableObj.delete = function (key) {
+        try {
+          if (key !== undefined && key !== null) {
+            const strKey = Array.isArray(key) ? String(key[0]) : String(key);
+            const resolved = resolveCanonicalMessageId(strKey);
+            if (capturedMessages.has(resolved)) {
+              queueMicrotask(() => {
+                triggerMessageUnsent(resolved, { source: `ReStore:${tableName}.delete` });
+              });
+            }
+          }
+        } catch (_) {}
+        return origDel.apply(this, arguments);
+      };
+    }
+  }
+
+  /**
+   * Kiểm tra và bọc moduleExports của một module vừa được khởi tạo qua window.__d
+   */
+  function instrumentFacebookModule(moduleName, exportsObj) {
+    if (!exportsObj) return exportsObj;
+
+    try {
+      // 1. Module MAWVault: Nơi cất giữ chuỗi bản rõ của đoạn chat mã hóa đầu cuối E2EE
+      if (/^MAWVault$/i.test(moduleName) || /MAWVault/i.test(moduleName)) {
+        if (typeof exportsObj === 'object') {
+          if (typeof exportsObj.unvault === 'function') {
+            mawUnvaultFn = exportsObj.unvault.bind(exportsObj);
+          }
+          if (typeof exportsObj.vault === 'function') {
+            const origVault = exportsObj.vault;
+            exportsObj.vault = function (plainValue) {
+              const vaultedToken = origVault.apply(this, arguments);
+              try {
+                if (typeof plainValue === 'string' && typeof vaultedToken === 'string') {
+                  vaultMap.set(vaultedToken, plainValue);
+                }
+              } catch (_) {}
+              return vaultedToken;
+            };
+          }
+        }
+        return exportsObj;
+      }
+
+      // 2. Các module Stored Procedure của Lightspeed & MAW xử lý tin nhắn
+      if (
+        /^(LS|MAW).*(InsertMessage|UpsertMessage|DeleteThenInsertMessage|MarkMessageUnsent|HandleUnsendMessage|DeleteMessage|ReplaceOptimisticMessage|Unsend|Revoke|Tombstone)/i.test(
+          moduleName
+        )
+      ) {
+        if (typeof exportsObj === 'function') {
+          const origFn = exportsObj;
+          const wrapped = function () {
+            const args = Array.from(arguments);
+            queueMicrotask(() => {
+              try {
+                inspectInternalProcedureCall(moduleName, args);
+              } catch (_) {}
+            });
+            return origFn.apply(this, arguments);
+          };
+          Object.assign(wrapped, origFn);
+          return wrapped;
+        } else if (typeof exportsObj === 'object') {
+          for (const key of Object.keys(exportsObj)) {
+            if (typeof exportsObj[key] === 'function') {
+              const origMethod = exportsObj[key];
+              exportsObj[key] = function () {
+                const args = Array.from(arguments);
+                queueMicrotask(() => {
+                  try {
+                    inspectInternalProcedureCall(`${moduleName}.${key}`, args);
+                  } catch (_) {}
+                });
+                return origMethod.apply(this, arguments);
+              };
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    return exportsObj;
+  }
+
+  // Thiết lập Hook lên window.__d ngay từ document_start
+  let currentDefFunc = window.__d;
+  function wrapDefineFn(origD) {
+    if (!origD || origD.__fbUnsendWrapped) return origD;
+    const wrappedD = function (moduleName, deps, factory, _extra) {
+      if (
+        typeof moduleName === 'string' &&
+        typeof factory === 'function' &&
+        (/^(LS|MAW).*(Message|Unsent|Unsend|Vault|Revoke|Tombstone)/i.test(moduleName) ||
+          /^MAWVault/i.test(moduleName))
+      ) {
+        const origFactory = factory;
+        factory = function (g, r, i, a, m, e, d) {
+          const ret = origFactory.apply(this, arguments);
+          try {
+            if (m && m.exports) {
+              m.exports = instrumentFacebookModule(moduleName, m.exports);
+            } else if (e) {
+              instrumentFacebookModule(moduleName, e);
+            }
+          } catch (_) {}
+          return ret;
+        };
+      }
+      return origD.apply(this, arguments);
+    };
+    wrappedD.__fbUnsendWrapped = true;
+    return wrappedD;
+  }
+
+  if (typeof currentDefFunc === 'function') {
+    currentDefFunc = wrapDefineFn(currentDefFunc);
+  }
+
+  try {
+    Object.defineProperty(window, '__d', {
+      configurable: true,
+      enumerable: true,
+      get: function () {
+        return currentDefFunc;
+      },
+      set: function (newFn) {
+        currentDefFunc = wrapDefineFn(newFn);
+      }
+    });
+  } catch (_) {}
 
   // ============================================================================
   // BỘ PHÂN TÍCH 1: Cây lệnh Lightspeed
@@ -314,7 +645,6 @@
         currentFunc = node[0];
       }
 
-      // Bỏ qua hoàn toàn hàm đồng bộ lịch sử cũ (insertNewMessageRange) để không tải lại tin nhắn cũ rích
       if (currentFunc === 'insertNewMessageRange') {
         return;
       }
@@ -329,7 +659,7 @@
       for (let i = 0; i < node.length; i++) {
         const item = node[i];
         if (typeof item === 'string') {
-          const trimmed = item.trim();
+          const trimmed = unvaultString(item).trim();
           if (
             trimmed.startsWith('mid.$') ||
             trimmed.startsWith('wmid.') ||
@@ -384,14 +714,12 @@
         for (const val of directI64Values) {
           const num = Number(val);
           if (num > 1577836800000 && num < 2051222400000) {
-            // Lấy giá trị timestamp hợp lệ nhỏ nhất (thường là thời điểm tạo tin nhắn gốc)
             if (!timestamp || num < timestamp) timestamp = num;
           } else if (val.length >= 5 && val !== '0') {
             ids.push(val);
           }
         }
 
-        // Nếu phát hiện timestamp là của tin nhắn lịch sử cũ từ xưa -> bỏ qua ngay!
         if (timestamp && isOldHistoricalTimestamp(timestamp)) {
           return;
         }
@@ -451,7 +779,7 @@
   }
 
   // ============================================================================
-  // BỘ PHÂN TÍCH 2: Object từ E2EE Worker, MessagePort, IndexedDB & React Fiber
+  // BỘ PHÂN TÍCH 2: Object từ ReStore, E2EE Worker, IndexedDB & React Fiber
   // ============================================================================
   function inspectPlainObject(
     obj,
@@ -465,6 +793,11 @@
     }
 
     try {
+      // Nếu object là một instance của ReStore DB (có thuộc tính tables.messages) -> Hook trực tiếp bảng messages!
+      if (obj.tables && typeof obj.tables === 'object' && obj.tables.messages) {
+        wrapReStoreTable(obj.tables.messages, 'messages');
+      }
+
       if (Array.isArray(obj.step)) {
         inspectLightspeedNode(obj.step, context);
       }
@@ -491,13 +824,17 @@
           : null);
 
       if (rawMsgId !== null && rawMsgId !== undefined) {
-        const msgId = String(rawMsgId).trim();
+        const msgId = unvaultString(String(rawMsgId)).trim();
         if (msgId.length >= 4) {
-          const timestamp = Number(
-            obj.timestampMs || obj.timestamp_ms || obj.timestamp || Date.now()
-          );
+          let timestamp = Date.now();
+          if (typeof obj.timestampMs === 'number') {
+            timestamp = obj.timestampMs;
+          } else if (Array.isArray(obj.timestampMs) && obj.timestampMs[0] === 19) {
+            timestamp = Number(obj.timestampMs[1]);
+          } else if (typeof obj.timestamp === 'number') {
+            timestamp = obj.timestamp;
+          }
 
-          // Bỏ qua nếu là bản ghi tin nhắn cũ trong lịch sử
           if (isOldHistoricalTimestamp(timestamp)) {
             return;
           }
@@ -510,9 +847,9 @@
             obj.id
           ]
             .filter(Boolean)
-            .map(String);
+            .map((v) => unvaultString(String(v)));
 
-          const textContent =
+          const rawTextContent =
             obj.text ??
             obj.body ??
             obj.plaintext ??
@@ -520,6 +857,9 @@
             obj.snippet ??
             (typeof obj.message === 'string' ? obj.message : obj.message?.text) ??
             (typeof obj.content === 'string' ? obj.content : obj.content?.text);
+
+          const textContent =
+            typeof rawTextContent === 'string' ? unvaultString(rawTextContent) : rawTextContent;
 
           const senderId = String(
             obj.senderId || obj.sender_id || obj.author || obj.actorId || obj.from || ''
@@ -560,7 +900,7 @@
                   att?.playableUrl ||
                   att?.imageUrl ||
                   att?.largePreviewUrl;
-                if (url && typeof url === 'string') attachments.push(url);
+                if (url && typeof url === 'string') attachments.push(unvaultString(url));
               }
             }
             registerCapturedMessage({
@@ -576,7 +916,7 @@
             });
           } else if (
             capturedMessages.has(resolveCanonicalMessageId(msgId)) &&
-            (textContent === '' || textContent === null) &&
+            (textContent === '' || textContent === null || textContent === undefined) &&
             (Object.prototype.hasOwnProperty.call(obj, 'text') ||
               Object.prototype.hasOwnProperty.call(obj, 'body') ||
               Object.prototype.hasOwnProperty.call(obj, 'plaintext'))
@@ -619,7 +959,7 @@
   }
 
   // ============================================================================
-  // BỘ PHÂN TÍCH 3: Quét React Fiber (__reactFiber$) chỉ trong vùng khung chat
+  // BỘ PHÂN TÍCH 3: Quét React Fiber (__reactFiber$) trong vùng khung chat
   // ============================================================================
   function extractMessageFromReactFiber(domNode) {
     if (!domNode || typeof domNode !== 'object') return null;
@@ -635,6 +975,11 @@
       while (fiber && steps < 25) {
         const props = fiber.memoizedProps || fiber.pendingProps;
         if (props && typeof props === 'object') {
+          // Nếu tìm thấy đối tượng ReStore db trong React Context -> Hook ngay bảng messages!
+          if (props.value?.tables?.messages) {
+            wrapReStoreTable(props.value.tables.messages, 'messages');
+          }
+
           const msgObj =
             props.message ||
             props.msg ||
@@ -650,11 +995,12 @@
               msgObj.offlineThreadingId ||
               msgObj.externalId ||
               msgObj.otid;
-            const text =
+            const rawText =
               msgObj.text ??
               msgObj.body ??
               msgObj.plaintext ??
               (typeof msgObj.message === 'string' ? msgObj.message : msgObj.message?.text);
+            const text = typeof rawText === 'string' ? unvaultString(rawText) : '';
             const isUnsent =
               Boolean(msgObj.isUnsent || msgObj.unsent || msgObj.unsentTimestampMs) ||
               msgObj.messageRenderingType === 2 ||
@@ -662,8 +1008,8 @@
 
             if (id) {
               return {
-                messageId: String(id),
-                text: typeof text === 'string' ? text : '',
+                messageId: unvaultString(String(id)),
+                text,
                 senderId: String(msgObj.senderId || msgObj.author || ''),
                 threadId: String(msgObj.threadId || msgObj.threadKey || ''),
                 isUnsent
@@ -681,7 +1027,6 @@
   function scanVisibleChatFiber() {
     if (!document.body) return;
     try {
-      // Chỉ quét các dòng tin nhắn thực sự có data-scope="messages_table"
       const elements = document.querySelectorAll(
         'div[data-scope="messages_table"], div[data-scope="messages_table"] div[dir="auto"]'
       );
@@ -720,7 +1065,7 @@
   });
 
   // ============================================================================
-  // TẦNG HOOK 1: Chặn đọc WebSocket (Chỉ xử lý các gói thời gian thực)
+  // TẦNG HOOK PHỤ TRỢ: WebSocket, IndexedDB & MessagePort
   // ============================================================================
   const originalJSONParse = JSON.parse;
   const OriginalWebSocket = window.WebSocket;
@@ -802,12 +1147,10 @@
   window.WebSocket.prototype = OriginalWebSocket.prototype;
   Object.assign(window.WebSocket, OriginalWebSocket);
 
-  // ============================================================================
-  // TẦNG HOOK 2: Chặn đọc IndexedDB & MessagePort cho E2EE
-  // ============================================================================
   if (window.IDBObjectStore) {
     const origPut = IDBObjectStore.prototype.put;
     const origAdd = IDBObjectStore.prototype.add;
+    const origDelete = IDBObjectStore.prototype.delete;
 
     IDBObjectStore.prototype.put = function (value, key) {
       try {
@@ -842,59 +1185,20 @@
       } catch (_) {}
       return origAdd.apply(this, arguments);
     };
-  }
 
-  function inspectWorkerChannelData(data, sourceLabel) {
-    if (!data) return;
-    queueMicrotask(() => {
+    IDBObjectStore.prototype.delete = function (key) {
       try {
-        if (typeof data === 'object') {
-          if (Array.isArray(data)) {
-            inspectLightspeedNode(data, {
-              fromRealtime: true,
-              currentFunc: sourceLabel,
-              source: sourceLabel
-            });
-          } else {
-            inspectPlainObject(data, 0, {
-              fromRealtime: true,
-              currentFunc: sourceLabel,
-              source: sourceLabel
+        if (key !== undefined && key !== null) {
+          const strKey = Array.isArray(key) ? String(key[0]) : String(key);
+          const resolved = resolveCanonicalMessageId(strKey);
+          if (capturedMessages.has(resolved)) {
+            queueMicrotask(() => {
+              triggerMessageUnsent(resolved, { source: 'idb-delete' });
             });
           }
         }
       } catch (_) {}
-    });
-  }
-
-  if (window.MessagePort) {
-    const origPortAddEventListener = MessagePort.prototype.addEventListener;
-    const hookedPorts = new WeakSet();
-
-    function ensurePortHooked(port) {
-      if (!port || hookedPorts.has(port)) return;
-      hookedPorts.add(port);
-      origPortAddEventListener.call(port, 'message', (event) => {
-        inspectWorkerChannelData(event.data, 'e2ee-port');
-      });
-    }
-
-    MessagePort.prototype.addEventListener = function (type, listener, options) {
-      ensurePortHooked(this);
-      return origPortAddEventListener.apply(this, arguments);
+      return origDelete.apply(this, arguments);
     };
-
-    const onmessageDesc = Object.getOwnPropertyDescriptor(MessagePort.prototype, 'onmessage');
-    if (onmessageDesc && onmessageDesc.set) {
-      Object.defineProperty(MessagePort.prototype, 'onmessage', {
-        configurable: true,
-        enumerable: true,
-        get: onmessageDesc.get,
-        set: function (fn) {
-          ensurePortHooked(this);
-          return onmessageDesc.set.call(this, fn);
-        }
-      });
-    }
   }
 })();

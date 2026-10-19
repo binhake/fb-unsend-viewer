@@ -265,7 +265,7 @@
       }
     });
 
-    // 3. Trích xuất hình ảnh / sticker / video trong dòng tin nhắn
+    // 3. Trích xuất hình ảnh / sticker / video trong dòng tin nhắn (bỏ qua avatar người gửi)
     const attachments = [];
     rowEl.querySelectorAll('img, video, audio').forEach((mediaEl) => {
       if (mediaEl.closest('.fb-unsend-restored-box')) return;
@@ -273,10 +273,14 @@
       if (!src || src.startsWith('data:image/svg')) return;
 
       if (mediaEl.tagName === 'IMG') {
-        const w = mediaEl.naturalWidth || mediaEl.width || mediaEl.clientWidth || 0;
-        const h = mediaEl.naturalHeight || mediaEl.height || mediaEl.clientHeight || 0;
-        // Bỏ qua ảnh đại diện nhỏ (avatar người gửi cạnh bong bóng chat thường <= 36px) hoặc emoji nhỏ
-        if ((w > 0 && w <= 40 && h > 0 && h <= 40) || mediaEl.closest('a[role="link"]')) {
+        const rect = mediaEl.getBoundingClientRect();
+        const displayW = rect.width || mediaEl.clientWidth || mediaEl.width || 0;
+        const displayH = rect.height || mediaEl.clientHeight || mediaEl.height || 0;
+        // Avatar người gửi (28x28 - 40x40), icon đã xem (14x14) và emoji nhỏ luôn có kích thước hiển thị <= 52px
+        if (
+          (displayW > 0 && displayW <= 52 && displayH > 0 && displayH <= 52) ||
+          mediaEl.closest('a[role="link"], svg, [role="button"][aria-label*="cảm xúc"]')
+        ) {
           return;
         }
       }
