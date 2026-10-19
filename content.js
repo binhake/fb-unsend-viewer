@@ -33,6 +33,27 @@
   const UI_IGNORE_REGEX =
     /^(Đã gửi|Đã nhận|Đã xem|Đang gửi|Đang viết|Sent|Delivered|Seen|Sending|Typing|Enter|Nhấn Enter để gửi|Được mã hóa đầu cuối|End-to-end encrypted|Trả lời|Reply|Chuyển tiếp|Forward|Xem thêm|See more|Bạn đã chuyển tiếp một tin nhắn|\d{1,2}:\d{2}(\s?[AP]M)?(\s+T\d|\s+CN)?)$/i;
 
+  function sanitizeAttachmentsList(attachments) {
+    if (!Array.isArray(attachments)) return [];
+    const valid = [];
+    for (const url of attachments) {
+      if (!url || typeof url !== 'string') continue;
+      // Loại bỏ URL media_fallback nội bộ (luôn bị lỗi sau khi gỡ) và URL ảnh đại diện Facebook
+      if (
+        url.includes('/messaging/lightspeed/media_fallback/') ||
+        /\/t39\.30808-1\/|p50x50|p100x100|s100x100|p60x60|p40x40|dst-jpg_s\d+x\d+/i.test(url)
+      ) {
+        continue;
+      }
+      if (!valid.includes(url)) {
+        valid.push(url);
+      }
+    }
+    // Nếu đã có ảnh data:image/webp (ảnh đã lưu đệm), ưu tiên giữ ảnh data:image/ để không bị trùng với URL mạng
+    const dataUrls = valid.filter((u) => u.startsWith('data:image/'));
+    return dataUrls.length > 0 ? dataUrls : valid;
+  }
+
   function loadFromStorage() {
     if (!chrome?.storage?.local) return;
     // Dọn dẹp khóa v1 cũ nếu có
@@ -40,7 +61,10 @@
 
     chrome.storage.local.get([STORAGE_KEY_MESSAGES, STORAGE_KEY_UNSENT], (res) => {
       if (Array.isArray(res[STORAGE_KEY_MESSAGES])) {
-        recentMessagesList = res[STORAGE_KEY_MESSAGES];
+        recentMessagesList = res[STORAGE_KEY_MESSAGES].map((msg) => ({
+          ...msg,
+          attachments: sanitizeAttachmentsList(msg.attachments)
+        }));
         for (const msg of recentMessagesList) {
           if (msg.messageId) {
             messagesById.set(msg.messageId, msg);
@@ -48,11 +72,23 @@
         }
       }
       if (Array.isArray(res[STORAGE_KEY_UNSENT])) {
-        unsentMessagesList = res[STORAGE_KEY_UNSENT];
+        unsentMessagesList = res[STORAGE_KEY_UNSENT]
+          .map((msg) => ({
+            ...msg,
+            attachments: sanitizeAttachmentsList(msg.attachments)
+          }))
+          .filter((msg) => msg.text || (msg.attachments && msg.attachments.length > 0));
+        for (const msg of unsentMessagesList) {
+          if (msg.messageId) {
+            messagesById.set(msg.messageId, msg);
+          }
+        }
       }
       console.log(
         `${LOG_PREFIX} Đã sẵn sàng (${recentMessagesList.length} tin nhắn lưu tạm, ${unsentMessagesList.length} tin nhắn bị gỡ).`
       );
+      // Quét lại khung chat ngay sau khi nạp xong dữ liệu từ Storage để khôi phục các tin nhắn bị gỡ sau khi F5
+      scheduleDomScan();
     });
   }
 
@@ -102,6 +138,8 @@
       handleCapturedMessage(payload);
     } else if (type === 'FB_MSG_UNSENT') {
       handleUnsentEvent(payload);
+    } else if (type === 'FB_FIBER_UPDATED') {
+      scanChatMessagesInDom();
     }
   });
 
@@ -162,16 +200,21 @@
       msg.senderName || existing?.senderName || ''
     );
 
+    const combinedAttachments = sanitizeAttachmentsList([
+      ...(msg.attachments || []),
+      ...(existing?.attachments || [])
+    ]);
+
     const merged = {
       ...existing,
       ...msg,
       text: existing?.text || msg.text || '',
-      attachments:
-        msg.attachments && msg.attachments.length > 0
-          ? msg.attachments
-          : existing?.attachments || [],
+      attachments: combinedAttachments,
       personName: msg.personName || existing?.personName || '',
-      threadName: msg.threadName || existing?.threadName || (!isGenericSenderName(activeThread) ? activeThread : ''),
+      threadName:
+        msg.threadName ||
+        existing?.threadName ||
+        (!isGenericSenderName(activeThread) ? activeThread : ''),
       senderName: resolvedSenderName,
       updatedAt: Date.now()
     };
@@ -199,10 +242,10 @@
   function handleUnsentEvent(unsentData) {
     const existing = messagesById.get(unsentData.messageId);
     const originalText = existing?.text || unsentData.text || '';
-    const originalAttachments =
-      existing?.attachments?.length > 0
-        ? existing.attachments
-        : unsentData.attachments || [];
+    const originalAttachments = sanitizeAttachmentsList([
+      ...(existing?.attachments || []),
+      ...(unsentData.attachments || [])
+    ]);
 
     if (!originalText && originalAttachments.length === 0) return;
 
@@ -374,6 +417,76 @@
   }
 
   /**
+   * Kiểm tra xem thẻ <img> có phải là avatar người gửi, icon cảm xúc, hay lớp ảnh nền làm mờ (blur) của Facebook không
+   */
+  function isAvatarOrDecorativeImage(imgEl, rawSrc, rowSenderName = '') {
+    if (!rawSrc || rawSrc.startsWith('data:image/svg')) return true;
+
+    // 1. Chặn theo mẫu URL của ảnh đại diện (profile picture /t39.30808-1/), emoji hoặc tài nguyên tĩnh Facebook
+    if (
+      /\/t39\.30808-1\/|p50x50|p100x100|s100x100|p60x60|p40x40|dst-jpg_s\d+x\d+|emoji\.php|rsrc\.php|static\.xx\.fbcdn\.net/i.test(
+        rawSrc
+      )
+    ) {
+      return true;
+    }
+
+    // 2. Chỉ lấy ảnh đã tải hoàn tất và có kích thước gốc đủ lớn (> 64x64)
+    if (!imgEl.complete || imgEl.naturalWidth <= 64 || imgEl.naturalHeight <= 64) {
+      return true;
+    }
+
+    // 3. Kiểm tra kích thước hiển thị thực tế trên màn hình (TUYỆT ĐỐI không fallback sang imgEl.width vì sẽ trả về naturalWidth)
+    const rect = imgEl.getBoundingClientRect();
+    if (rect.width <= 58 || rect.height <= 58) {
+      return true;
+    }
+
+    // 4. Kiểm tra thuộc tính alt: Ảnh đại diện luôn có alt là tên người gửi hoặc "Đã xem bởi..."
+    const alt = (imgEl.getAttribute('alt') || '').trim();
+    if (alt) {
+      if (/^(Đã xem|Seen by)/i.test(alt)) return true;
+      if (rowSenderName && alt.toLowerCase() === rowSenderName.toLowerCase()) return true;
+    }
+
+    if (imgEl.closest('svg, [role="button"][aria-label*="cảm xúc"]')) {
+      return true;
+    }
+
+    // 5. Kiểm tra CSS của ảnh và 3 cấp thẻ cha:
+    // - Chặn ảnh nền làm mờ (filter: blur(...)) mà Facebook chèn phía sau ảnh chính
+    // - Chặn ảnh đại diện hình tròn (border-radius: 50%) hoặc khung nhỏ <= 58px
+    let curr = imgEl;
+    for (let depth = 0; depth < 4 && curr && curr instanceof HTMLElement; depth++) {
+      try {
+        const cs = window.getComputedStyle(curr);
+        if (cs.filter && cs.filter.includes('blur')) {
+          return true;
+        }
+        if (cs.borderTopLeftRadius === '50%') {
+          return true;
+        }
+        const radiusPx = parseFloat(cs.borderTopLeftRadius) || 0;
+        const currRect = curr.getBoundingClientRect();
+        if (
+          currRect.width > 0 &&
+          Math.abs(currRect.width - currRect.height) <= 4 &&
+          radiusPx >= currRect.width * 0.45 &&
+          currRect.width <= 80
+        ) {
+          return true;
+        }
+        if (currRect.width > 0 && (currRect.width <= 58 || currRect.height <= 58)) {
+          return true;
+        }
+      } catch (_) {}
+      curr = curr.parentElement;
+    }
+
+    return false;
+  }
+
+  /**
    * Chuyển ảnh (đặc biệt là ảnh E2EE dạng blob: vốn sẽ bị Facebook thu hồi ngay khi gỡ)
    * sang dạng Data URL (webp nén nhẹ) để giữ lại vĩnh viễn khi tin nhắn bị xóa
    */
@@ -385,8 +498,7 @@
       return cachedImageMap.get(rawSrc);
     }
 
-    // Nếu ảnh đã tải xong và vẽ được lên canvas (như ảnh blob: trong E2EE)
-    if (imgEl.complete && imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
+    if (imgEl.complete && imgEl.naturalWidth > 64 && imgEl.naturalHeight > 64) {
       try {
         const maxDim = 360;
         let w = imgEl.naturalWidth;
@@ -435,7 +547,7 @@
    * Phân biệt rõ:
    * - isUnsentRow: Dòng này đang hiển thị câu "Bình đã xóa một tin nhắn" / "đã thu hồi một tin nhắn"
    * - text: Nội dung văn bản của tin nhắn (không lấy tên người gửi ở đầu dòng)
-   * - attachments: Hình ảnh / Video / Sticker trong tin nhắn
+   * - attachments: Hình ảnh / Video / Sticker trong tin nhắn (đã lọc sạch avatar & ảnh nền mờ)
    * - rowSenderName: Tên người gửi trích xuất từ dòng chat
    */
   function analyzeChatRow(rowEl) {
@@ -495,7 +607,6 @@
     const texts = [];
     const textNodes = rowEl.querySelectorAll('div[dir="auto"]');
     textNodes.forEach((el) => {
-      // Bỏ qua tiêu đề tên người gửi (thường nằm trong thẻ h4, h5 hoặc span role="presentation" phía trên bong bóng)
       if (el.closest('h3, h4, h5, h6')) return;
 
       const t = (el.innerText || '').trim();
@@ -506,22 +617,24 @@
       }
     });
 
-    // 3. Trích xuất hình ảnh / sticker / video trong dòng tin nhắn (bỏ qua avatar người gửi)
+    // 3. Trích xuất hình ảnh / sticker / video trong dòng tin nhắn (bỏ qua avatar người gửi & ảnh nền mờ)
     const attachments = [];
+    const seenPhotoContainers = new Set();
+
     rowEl.querySelectorAll('img, video, audio').forEach((mediaEl) => {
       const rawSrc = mediaEl.currentSrc || mediaEl.src || '';
       if (!rawSrc || rawSrc.startsWith('data:image/svg')) return;
 
       if (mediaEl.tagName === 'IMG') {
-        const rect = mediaEl.getBoundingClientRect();
-        const displayW = rect.width || mediaEl.clientWidth || mediaEl.width || 0;
-        const displayH = rect.height || mediaEl.clientHeight || mediaEl.height || 0;
-        // Avatar người gửi (28x28 - 40x40), icon đã xem (14x14) và emoji nhỏ luôn có kích thước hiển thị <= 52px
-        if (
-          (displayW > 0 && displayW <= 52 && displayH > 0 && displayH <= 52) ||
-          mediaEl.closest('a[role="link"], svg, [role="button"][aria-label*="cảm xúc"]')
-        ) {
+        if (isAvatarOrDecorativeImage(mediaEl, rawSrc, rowSenderName)) {
           return;
+        }
+
+        // Mỗi khung ảnh (a[role="link"] hoặc div[role="button"]) chỉ lấy tối đa 1 thẻ <img> chính
+        const photoContainer = mediaEl.closest('a[role="link"], div[role="button"]');
+        if (photoContainer) {
+          if (seenPhotoContainers.has(photoContainer)) return;
+          seenPhotoContainers.add(photoContainer);
         }
 
         const cachedSrc = getOrCacheImageSrc(mediaEl);
@@ -541,9 +654,125 @@
       alreadyRestored: false,
       unsentNoticeEl: null,
       text: texts.join('\n').trim(),
-      attachments,
+      attachments: sanitizeAttachmentsList(attachments),
       rowSenderName
     };
+  }
+
+  /**
+   * Đối chiếu các dòng "đã xóa một tin nhắn" trên khung chat với lịch sử unsentMessagesList đã lưu
+   * để tự động hiện lại tin nhắn bị gỡ sau khi tải lại trang (F5) hoặc mở lại cuộc trò chuyện
+   */
+  function matchUnsentRowsFromSavedHistory(unmatchedRows) {
+    if (!unmatchedRows.length || !unsentMessagesList.length) return new Map();
+
+    const rowToRecordMap = new Map();
+    const usedMessageIds = new Set();
+
+    // Ghi nhận các messageId đã được khôi phục trên các dòng DOM hiện tại
+    document.querySelectorAll('div[data-scope="messages_table"][data-fb-unsend-matched-id]').forEach((el) => {
+      if (el.dataset.fbUnsendMatchedId) {
+        usedMessageIds.add(el.dataset.fbUnsendMatchedId);
+      }
+    });
+
+    // Bước 1: Khớp chính xác theo Message ID (mid.$...) từ React Fiber
+    const remainingRows = [];
+    for (const item of unmatchedRows) {
+      const fiberId = item.rowEl.dataset?.fbMsgId || item.rowEl.parentElement?.dataset?.fbMsgId;
+      if (fiberId) {
+        const exactMatch = unsentMessagesList.find((u) => u.messageId === fiberId);
+        if (exactMatch && (exactMatch.text || exactMatch.attachments?.length)) {
+          rowToRecordMap.set(item.rowEl, exactMatch);
+          usedMessageIds.add(exactMatch.messageId);
+          continue;
+        }
+      }
+      remainingRows.push(item);
+    }
+
+    if (remainingRows.length === 0) return rowToRecordMap;
+
+    // Bước 2: Gom nhóm các dòng chưa khớp theo (Tên người gỡ trên thông báo + Tên cuộc trò chuyện)
+    // và khớp theo thứ tự thời gian từ trên xuống dưới (cũ -> mới)
+    const groups = new Map();
+    for (const item of remainingRows) {
+      const noticeText = (item.noticeEl?.textContent || '').trim();
+      const noticePerson = extractNameFromNotice(noticeText) || item.rowSenderName || '';
+      const groupKey = `${noticePerson.toLowerCase()}__${(item.threadName || '').toLowerCase()}`;
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, {
+          noticePerson,
+          threadName: item.threadName || '',
+          rows: []
+        });
+      }
+      groups.get(groupKey).rows.push(item);
+    }
+
+    for (const group of groups.values()) {
+      const { noticePerson, threadName, rows } = group;
+      const pLower = noticePerson.toLowerCase();
+      const tLower = !isGenericSenderName(threadName) ? threadName.toLowerCase() : '';
+
+      // Tìm các bản ghi trong unsentMessagesList khớp với người gỡ và cuộc trò chuyện này
+      let candidates = unsentMessagesList.filter((u) => {
+        if (usedMessageIds.has(u.messageId)) return false;
+        if (!u.text && (!u.attachments || u.attachments.length === 0)) return false;
+
+        const uSender = (u.senderName || '').toLowerCase();
+        const uPerson = (u.personName || '').toLowerCase();
+        const uThread = (u.threadName || '').toLowerCase();
+
+        const personMatches =
+          !pLower ||
+          uPerson === pLower ||
+          uSender.includes(pLower) ||
+          pLower.includes(uPerson && uPerson.length >= 2 ? uPerson : '__none__');
+
+        const threadMatches =
+          !tLower ||
+          uThread === tLower ||
+          uSender.includes(tLower) ||
+          tLower.includes(uThread && uThread.length >= 3 ? uThread : '__none__') ||
+          isGenericSenderName(u.senderName);
+
+        return personMatches && threadMatches;
+      });
+
+      // Dự phòng: Nếu các bản ghi cũ trước khi nâng cấp đang lưu tên là "Facebook Chat" hoặc chỉ lưu tên nhóm
+      if (candidates.length < rows.length) {
+        const fallbackCandidates = unsentMessagesList.filter((u) => {
+          if (usedMessageIds.has(u.messageId) || candidates.includes(u)) return false;
+          if (!u.text && (!u.attachments || u.attachments.length === 0)) return false;
+          const uSender = (u.senderName || '').toLowerCase();
+          return (
+            isGenericSenderName(u.senderName) ||
+            (tLower && uSender.includes(tLower)) ||
+            (pLower && uSender.includes(pLower))
+          );
+        });
+        candidates = [...candidates, ...fallbackCandidates];
+      }
+
+      if (candidates.length > 0) {
+        // unsentMessagesList đang xếp từ MỚI NHẤT -> CŨ NHẤT.
+        // Lấy N tin nhắn gần nhất tương ứng với N dòng thông báo xóa ở cuối khung chat,
+        // rồi đảo ngược lại thành CŨ -> MỚI để khớp tương ứng từ dòng trên xuống dòng dưới!
+        const selected = candidates.slice(0, rows.length).reverse();
+        const startRowOffset = Math.max(0, rows.length - selected.length);
+        for (let i = 0; i < selected.length; i++) {
+          const targetRow = rows[startRowOffset + i];
+          const record = selected[i];
+          if (targetRow && record) {
+            rowToRecordMap.set(targetRow.rowEl, record);
+            usedMessageIds.add(record.messageId);
+          }
+        }
+      }
+    }
+
+    return rowToRecordMap;
   }
 
   /**
@@ -597,13 +826,14 @@
           prev?.senderName || ''
         );
 
+        const cleanAttachments = sanitizeAttachmentsList(
+          analysis.attachments.length > 0 ? analysis.attachments : prev?.attachments || []
+        );
+
         const record = {
           messageId: msgId,
           text: analysis.text || prev?.text || '',
-          attachments:
-            analysis.attachments.length > 0
-              ? analysis.attachments
-              : prev?.attachments || [],
+          attachments: cleanAttachments,
           personName,
           threadName: !isGenericSenderName(threadName) ? threadName : prev?.threadName || '',
           senderName: fullSenderName,
@@ -637,12 +867,19 @@
         // Lưu vào Snapshot hiện tại
         currentSnapshot.set(record.messageId, record);
 
-        // Chỉ in log và lưu khi có tin nhắn mới xuất hiện trên khung chat
-        if (!prev) {
-          console.log(
-            `${LOG_PREFIX} 💬 Đã ghi nhận tin nhắn trong khung chat [${record.senderName}]:`,
-            record.text || `(Đính kèm ${record.attachments.length} media)`
-          );
+        const attachmentsUpgraded =
+          prev &&
+          record.attachments.length > 0 &&
+          JSON.stringify(record.attachments) !== JSON.stringify(prev.attachments || []);
+
+        // In log và lưu khi có tin nhắn mới xuất hiện trên khung chat hoặc khi ảnh vừa chuyển sang data:image/webp
+        if (!prev || attachmentsUpgraded) {
+          if (!prev) {
+            console.log(
+              `${LOG_PREFIX} 💬 Đã ghi nhận tin nhắn trong khung chat [${record.senderName}]:`,
+              record.text || `(Đính kèm ${record.attachments.length} media)`
+            );
+          }
           handleCapturedMessage(record);
         }
       }
@@ -660,6 +897,9 @@
         }
       }
     }
+
+    // Đối chiếu trước các dòng thông báo xóa với lịch sử unsentMessagesList (dùng khi người dùng F5 tải lại trang)
+    const historyMatchedMap = matchUnsentRowsFromSavedHistory(currentUnsentRows);
 
     // Xử lý các dòng có thông báo "đã xóa một tin nhắn" / "đã thu hồi một tin nhắn"
     currentUnsentRows.forEach(({ rowEl, noticeEl, rowIndex, threadName, rowSenderName }) => {
@@ -689,7 +929,7 @@
           restored = {
             messageId: rowEl.dataset?.fbMsgId || `unsend_${Date.now()}_${rowIndex}`,
             text: savedText || '',
-            attachments,
+            attachments: sanitizeAttachmentsList(attachments),
             personName:
               rowSenderName ||
               rowEl.dataset?.fbUnsendSavedSender ||
@@ -720,47 +960,64 @@
         }
       }
 
-      // Nếu tìm được nội dung gốc -> Khôi phục ngay lên màn hình + Hiện Toast + Lưu/Cập nhật lịch sử!
+      // Cách 5: Khôi phục từ lịch sử đã lưu trong chrome.storage.local (sau khi tải lại trang F5)
+      if (!restored || (!restored.text && !restored.attachments?.length)) {
+        if (historyMatchedMap.has(rowEl)) {
+          restored = historyMatchedMap.get(rowEl);
+        }
+      }
+
+      // Nếu tìm được nội dung gốc -> Khôi phục ngay lên màn hình + Hiện Toast (nếu mới gỡ) + Lưu/Cập nhật lịch sử!
       if (
         restored &&
         (restored.text || (restored.attachments && restored.attachments.length > 0))
       ) {
+        const cleanRestored = {
+          ...restored,
+          attachments: sanitizeAttachmentsList(restored.attachments)
+        };
+        if (!cleanRestored.text && cleanRestored.attachments.length === 0) return;
+
         const noticeTextBeforeRestore = (noticeEl.textContent || '').trim();
         const noticePerson = extractNameFromNotice(noticeTextBeforeRestore);
         const bestPersonName =
           noticePerson ||
           rowSenderName ||
-          restored.personName ||
+          cleanRestored.personName ||
           rowEl.dataset?.fbUnsendSavedSender ||
           '';
         const bestThreadName = !isGenericSenderName(threadName)
           ? threadName
-          : restored.threadName || '';
+          : cleanRestored.threadName || '';
 
         const resolvedSenderName = formatSenderAndThreadName(
           bestPersonName,
           bestThreadName,
-          restored.senderName || ''
+          cleanRestored.senderName || ''
         );
 
-        renderRestoredContentInDom(rowEl, noticeEl, restored);
+        const msgId = cleanRestored.messageId || `unsend_${Date.now()}`;
+        rowEl.dataset.fbUnsendMatchedId = msgId;
 
-        const msgId = restored.messageId || `unsend_${Date.now()}`;
+        renderRestoredContentInDom(rowEl, noticeEl, cleanRestored);
+
         const existingIdx = unsentMessagesList.findIndex(
           (u) =>
             u.messageId === msgId ||
-            (u.text && u.text === restored.text && Math.abs((u.unsentAt || 0) - Date.now()) < 15000)
+            (u.text &&
+              u.text === cleanRestored.text &&
+              Math.abs((u.unsentAt || 0) - Date.now()) < 15000)
         );
 
         if (existingIdx === -1) {
           const unsentRecord = {
             messageId: msgId,
-            text: restored.text || '',
-            attachments: restored.attachments || [],
+            text: cleanRestored.text || '',
+            attachments: cleanRestored.attachments || [],
             personName: bestPersonName,
             threadName: bestThreadName,
             senderName: resolvedSenderName,
-            timestamp: restored.timestamp || Date.now(),
+            timestamp: cleanRestored.timestamp || Date.now(),
             unsentAt: Date.now(),
             isUnsent: true
           };
@@ -775,8 +1032,9 @@
           showUnsentToast(unsentRecord);
           notifyUnreadBadge();
         } else if (!isGenericSenderName(resolvedSenderName)) {
-          // Nếu bản ghi đã được lưu trước đó 80ms bởi tầng ngầm nhưng chưa có tên người gỡ/nhóm đầy đủ -> Cập nhật ngay!
+          // Cập nhật lại tên người gỡ/nhóm đầy đủ và danh sách media đã làm sạch cho bản ghi trong lịch sử
           const existingItem = unsentMessagesList[existingIdx];
+          let changed = false;
           if (
             isGenericSenderName(existingItem.senderName) ||
             (resolvedSenderName.length > (existingItem.senderName || '').length &&
@@ -785,15 +1043,17 @@
             existingItem.senderName = resolvedSenderName;
             existingItem.personName = bestPersonName || existingItem.personName || '';
             existingItem.threadName = bestThreadName || existingItem.threadName || '';
+            changed = true;
+          }
+          if (
+            cleanRestored.attachments.length > 0 &&
+            JSON.stringify(existingItem.attachments) !== JSON.stringify(cleanRestored.attachments)
+          ) {
+            existingItem.attachments = cleanRestored.attachments;
+            changed = true;
+          }
+          if (changed) {
             saveToStorage();
-
-            // Cập nhật cả tên trên Toast đang hiển thị (nếu có)
-            const activeToastSender = document.querySelector(
-              '#fb-unsend-toast-container .fb-unsend-toast-sender'
-            );
-            if (activeToastSender) {
-              activeToastSender.textContent = resolvedSenderName;
-            }
           }
         }
       } else {
@@ -846,14 +1106,11 @@
     }
 
     // 2. Thay "Bình đã xóa một tin nhắn" thành "Bình đã xóa một tin nhắn: nội dung"
-    const baseText = (noticeEl.textContent || '').trim().replace(/\.+$/, '');
-    const displayContent = data.text
-      ? data.text
-      : data.attachments?.length
-        ? `[Đính kèm ${data.attachments.length} media]`
-        : '';
+    // Nếu chỉ có hình ảnh mà không có chữ thì chỉ thêm dấu ":" rồi hiển thị ảnh ngay bên dưới, không in "[Đính kèm ... media]"
+    const baseText = (noticeEl.textContent || '').trim().replace(/[:.]+$/, '');
+    const cleanAttachments = sanitizeAttachmentsList(data.attachments);
 
-    if (displayContent) {
+    if (data.text) {
       if (noticeEl.firstChild && noticeEl.firstChild.nodeType === Node.TEXT_NODE) {
         noticeEl.firstChild.nodeValue = `${baseText}: `;
       } else {
@@ -862,20 +1119,30 @@
 
       const contentSpan = document.createElement('span');
       contentSpan.className = 'fb-unsend-inline-text';
-      contentSpan.textContent = displayContent;
+      contentSpan.textContent = data.text;
       noticeEl.appendChild(contentSpan);
+    } else if (cleanAttachments.length > 0) {
+      if (noticeEl.firstChild && noticeEl.firstChild.nodeType === Node.TEXT_NODE) {
+        noticeEl.firstChild.nodeValue = `${baseText}:`;
+      } else {
+        noticeEl.textContent = `${baseText}:`;
+      }
     }
 
     // 3. Nếu có đính kèm hình ảnh / sticker thì hiển thị ngay bên dưới câu chữ trong cùng bong bóng
-    if (data.attachments && data.attachments.length > 0) {
+    if (cleanAttachments.length > 0) {
       const mediaContainer = document.createElement('div');
       mediaContainer.className = 'fb-unsend-media-list';
-      data.attachments.forEach((url) => {
+      cleanAttachments.forEach((url) => {
         const img = document.createElement('img');
         img.src = url;
         img.className = 'fb-unsend-restored-img';
         img.title = 'Nhấn để mở ảnh gốc';
         img.addEventListener('click', () => window.open(url, '_blank'));
+        // Tự động ẩn nếu URL ảnh cũ đã hết hạn để không hiện khung ảnh lỗi
+        img.addEventListener('error', () => {
+          img.remove();
+        });
         mediaContainer.appendChild(img);
       });
       (bubbleEl || noticeEl.parentElement || noticeEl).appendChild(mediaContainer);

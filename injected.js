@@ -1366,4 +1366,92 @@
       return origDelete.apply(this, arguments);
     };
   }
+
+  // ============================================================================
+  // 6. QUÉT CHỈ ĐỌC REACT FIBER TRÊN DÒNG CHAT ĐỂ LẤY MESSAGE ID (HỖ TRỢ KHÔI PHỤC SAU KHI F5)
+  // ============================================================================
+  function extractMsgIdFromProps(props, depth = 0) {
+    if (!props || typeof props !== 'object' || depth > 3) return '';
+    const directCandidates = [
+      props.messageId,
+      props.message_id,
+      props.msgId,
+      props.id,
+      props.message?.messageId,
+      props.message?.message_id,
+      props.message?.id,
+      props.message?.offlineThreadingId,
+      props.row?.messageId,
+      props.row?.message?.messageId
+    ];
+    for (const c of directCandidates) {
+      if (typeof c === 'string') {
+        const clean = unvaultString(c).trim();
+        if (
+          clean.startsWith('mid.$') ||
+          clean.startsWith('wmid.') ||
+          clean.startsWith('otid.') ||
+          clean.startsWith('ee.mid.$')
+        ) {
+          return clean.replace(/^ee\./, '');
+        }
+      }
+    }
+    return '';
+  }
+
+  function findFiberMessageIdForRow(rowEl) {
+    if (!rowEl || !(rowEl instanceof HTMLElement)) return '';
+    const elementsToCheck = [rowEl, ...Array.from(rowEl.querySelectorAll('div, span')).slice(0, 18)];
+    for (const el of elementsToCheck) {
+      const fiberKey = Object.keys(el).find(
+        (k) => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')
+      );
+      if (!fiberKey) continue;
+      let curr = el[fiberKey];
+      for (let step = 0; step < 14 && curr; step++) {
+        if (typeof curr.key === 'string') {
+          const cleanKey = unvaultString(curr.key).trim();
+          if (
+            cleanKey.startsWith('mid.$') ||
+            cleanKey.startsWith('wmid.') ||
+            cleanKey.startsWith('otid.')
+          ) {
+            return resolveCanonicalMessageId(cleanKey);
+          }
+        }
+        const fromProps = extractMsgIdFromProps(curr.memoizedProps);
+        if (fromProps) {
+          return resolveCanonicalMessageId(fromProps);
+        }
+        curr = curr.return;
+      }
+    }
+    return '';
+  }
+
+  function scanReactFiberOnChatRows() {
+    if (!document.body) return;
+    let updatedCount = 0;
+    const rows = document.querySelectorAll('div[data-scope="messages_table"]');
+    rows.forEach((rowEl) => {
+      if (rowEl.dataset.fbMsgId) return;
+      const msgId = findFiberMessageIdForRow(rowEl);
+      if (msgId) {
+        rowEl.dataset.fbMsgId = msgId;
+        updatedCount++;
+      }
+    });
+    if (updatedCount > 0) {
+      emitToContentScript('FB_FIBER_UPDATED', { updatedCount });
+    }
+  }
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window || !event.data) return;
+    if (event.data.source === 'FB_UNSEND_EXTENSION_CONTENT' && event.data.type === 'SCAN_FIBER') {
+      scanReactFiberOnChatRows();
+    }
+  });
 })();
+
