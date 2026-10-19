@@ -223,14 +223,33 @@
    */
   function analyzeChatRow(rowEl) {
     if (!rowEl || !(rowEl instanceof HTMLElement)) {
-      return { isUnsentRow: false, unsentNoticeEl: null, text: '', attachments: [] };
+      return {
+        isUnsentRow: false,
+        alreadyRestored: false,
+        unsentNoticeEl: null,
+        text: '',
+        attachments: []
+      };
+    }
+
+    // Nếu dòng này đã được khôi phục trước đó thì bỏ qua ngay, không quét lại
+    if (
+      rowEl.dataset.fbUnsendRestored === 'true' ||
+      rowEl.querySelector('.fb-unsend-restored-bubble, .fb-unsend-inline-text')
+    ) {
+      return {
+        isUnsentRow: true,
+        alreadyRestored: true,
+        unsentNoticeEl: null,
+        text: '',
+        attachments: []
+      };
     }
 
     // 1. Kiểm tra xem dòng này có chứa thông báo thu hồi / xóa tin nhắn không
     let unsentNoticeEl = null;
     const allElements = rowEl.querySelectorAll('div, span');
     for (const el of allElements) {
-      if (el.closest('.fb-unsend-restored-box')) continue;
       if (el.childElementCount === 0) {
         const txt = (el.textContent || '').trim();
         if (txt && txt.length < 120 && UNSEND_REGEX.test(txt)) {
@@ -243,6 +262,7 @@
     if (unsentNoticeEl) {
       return {
         isUnsentRow: true,
+        alreadyRestored: false,
         unsentNoticeEl,
         text: '',
         attachments: []
@@ -253,7 +273,6 @@
     const texts = [];
     const textNodes = rowEl.querySelectorAll('div[dir="auto"]');
     textNodes.forEach((el) => {
-      if (el.closest('.fb-unsend-restored-box')) return;
       // Bỏ qua tiêu đề tên người gửi (thường nằm trong thẻ h4, h5 hoặc span role="presentation" phía trên bong bóng)
       if (el.closest('h3, h4, h5, h6')) return;
 
@@ -268,7 +287,6 @@
     // 3. Trích xuất hình ảnh / sticker / video trong dòng tin nhắn (bỏ qua avatar người gửi)
     const attachments = [];
     rowEl.querySelectorAll('img, video, audio').forEach((mediaEl) => {
-      if (mediaEl.closest('.fb-unsend-restored-box')) return;
       const src = mediaEl.currentSrc || mediaEl.src || '';
       if (!src || src.startsWith('data:image/svg')) return;
 
@@ -292,6 +310,7 @@
 
     return {
       isUnsentRow: false,
+      alreadyRestored: false,
       unsentNoticeEl: null,
       text: texts.join('\n').trim(),
       attachments
@@ -313,12 +332,14 @@
       const threadName = findActiveThreadName(rowEl);
 
       if (analysis.isUnsentRow) {
-        currentUnsentRows.push({
-          rowEl,
-          noticeEl: analysis.unsentNoticeEl,
-          rowIndex: index,
-          threadName
-        });
+        if (!analysis.alreadyRestored && analysis.unsentNoticeEl) {
+          currentUnsentRows.push({
+            rowEl,
+            noticeEl: analysis.unsentNoticeEl,
+            rowIndex: index,
+            threadName
+          });
+        }
         return;
       }
 
@@ -389,8 +410,7 @@
 
     // Xử lý các dòng có thông báo "đã xóa một tin nhắn" / "đã thu hồi một tin nhắn"
     currentUnsentRows.forEach(({ rowEl, noticeEl, rowIndex, threadName }) => {
-      // Nếu đã hiển thị hộp khôi phục rồi thì bỏ qua
-      if (rowEl.querySelector('.fb-unsend-restored-box')) return;
+      if (rowEl.dataset.fbUnsendRestored === 'true') return;
 
       // Tìm dữ liệu gốc của dòng vừa bị xóa
       let restored = specificRecord;
@@ -448,7 +468,7 @@
         restored &&
         (restored.text || (restored.attachments && restored.attachments.length > 0))
       ) {
-        renderRestoredContentInDom(noticeEl, restored);
+        renderRestoredContentInDom(rowEl, noticeEl, restored);
 
         const msgId = restored.messageId || `unsend_${Date.now()}`;
         const alreadySaved = unsentMessagesList.some(
@@ -489,27 +509,67 @@
   }
 
   /**
-   * Chèn hộp hiển thị nội dung tin nhắn gốc ngay bên dưới dòng "Bình đã xóa một tin nhắn"
+   * Tìm phần tử bong bóng gốc có chứa viền (border / border-radius) bao quanh câu "Bình đã xóa một tin nhắn"
    */
-  function renderRestoredContentInDom(noticeEl, data) {
-    const targetParent = noticeEl.parentElement || noticeEl;
-    if (targetParent.querySelector('.fb-unsend-restored-box')) return;
+  function findOriginalBubbleElement(noticeEl, rowEl) {
+    let curr = noticeEl;
+    let roundedCandidate = null;
 
-    const box = document.createElement('div');
-    box.className = 'fb-unsend-restored-box';
+    for (let depth = 0; depth < 6 && curr && curr !== rowEl; depth++) {
+      try {
+        const cs = window.getComputedStyle(curr);
+        const borderW = parseFloat(cs.borderTopWidth) || parseFloat(cs.borderLeftWidth) || 0;
+        const radius = parseFloat(cs.borderTopLeftRadius) || 0;
 
-    const badge = document.createElement('div');
-    badge.className = 'fb-unsend-badge';
-    badge.textContent = '🔓 Nội dung trước khi gỡ:';
-    box.appendChild(badge);
-
-    if (data.text) {
-      const textDiv = document.createElement('div');
-      textDiv.className = 'fb-unsend-text';
-      textDiv.textContent = data.text;
-      box.appendChild(textDiv);
+        if (borderW > 0 && cs.borderTopStyle !== 'none') {
+          return curr;
+        }
+        if (!roundedCandidate && radius >= 10) {
+          roundedCandidate = curr;
+        }
+      } catch (_) {}
+      curr = curr.parentElement;
     }
 
+    return roundedCandidate || noticeEl.parentElement || noticeEl;
+  }
+
+  /**
+   * Đổi viền gốc của bong bóng tin nhắn sang đỏ và nối nội dung trực tiếp thành:
+   * "Bình đã xóa một tin nhắn: <nội dung>"
+   */
+  function renderRestoredContentInDom(rowEl, noticeEl, data) {
+    if (!noticeEl || rowEl.dataset.fbUnsendRestored === 'true') return;
+    rowEl.dataset.fbUnsendRestored = 'true';
+
+    // 1. Chuyển viền gốc của bong bóng tin nhắn thành màu đỏ
+    const bubbleEl = findOriginalBubbleElement(noticeEl, rowEl);
+    if (bubbleEl) {
+      bubbleEl.classList.add('fb-unsend-restored-bubble');
+    }
+
+    // 2. Thay "Bình đã xóa một tin nhắn" thành "Bình đã xóa một tin nhắn: nội dung"
+    const baseText = (noticeEl.textContent || '').trim().replace(/\.+$/, '');
+    const displayContent = data.text
+      ? data.text
+      : data.attachments?.length
+        ? `[Đính kèm ${data.attachments.length} media]`
+        : '';
+
+    if (displayContent) {
+      if (noticeEl.firstChild && noticeEl.firstChild.nodeType === Node.TEXT_NODE) {
+        noticeEl.firstChild.nodeValue = `${baseText}: `;
+      } else {
+        noticeEl.textContent = `${baseText}: `;
+      }
+
+      const contentSpan = document.createElement('span');
+      contentSpan.className = 'fb-unsend-inline-text';
+      contentSpan.textContent = displayContent;
+      noticeEl.appendChild(contentSpan);
+    }
+
+    // 3. Nếu có đính kèm hình ảnh / sticker thì hiển thị ngay bên dưới câu chữ trong cùng bong bóng
     if (data.attachments && data.attachments.length > 0) {
       const mediaContainer = document.createElement('div');
       mediaContainer.className = 'fb-unsend-media-list';
@@ -521,10 +581,8 @@
         img.addEventListener('click', () => window.open(url, '_blank'));
         mediaContainer.appendChild(img);
       });
-      box.appendChild(mediaContainer);
+      (bubbleEl || noticeEl.parentElement || noticeEl).appendChild(mediaContainer);
     }
-
-    targetParent.appendChild(box);
   }
 
   /**
