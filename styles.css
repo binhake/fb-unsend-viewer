@@ -1,6 +1,5 @@
-/* styles.css - Định dạng hiển thị cho tin nhắn đã bị gỡ trên Facebook */
+/* styles.css - Định dạng hiển thị tin nhắn khôi phục, Toast và Lightbox trên Facebook */
 
-/* Chuyển viền gốc của bong bóng tin nhắn bị gỡ sang màu đỏ nổi bật */
 .fb-unsend-restored-bubble {
   border-color: rgba(255, 77, 79, 0.85) !important;
   border-width: 1.5px !important;
@@ -10,7 +9,6 @@
   transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
 }
 
-/* Nội dung tin nhắn hiển thị nối tiếp ngay sau "đã xóa một tin nhắn: " */
 .fb-unsend-inline-text {
   font-style: normal !important;
   font-weight: 600 !important;
@@ -42,7 +40,7 @@
   border-color: #ff4d4f;
 }
 
-/* Toast thông báo góc dưới màn hình khi phát hiện gỡ tin nhắn */
+/* Toast Notification */
 #fb-unsend-toast-container {
   position: fixed;
   bottom: 22px;
@@ -138,7 +136,7 @@
   transform: scale(1.06);
 }
 
-/* Hộp thoại xem ảnh phóng to (Image Lightbox) ngay trên trang */
+/* Image Lightbox */
 #fb-unsend-lightbox-overlay {
   position: fixed;
   inset: 0;
@@ -231,4 +229,3 @@
     opacity: 1;
   }
 }
-

@@ -1,16 +1,6 @@
-/**
- * content.js - Chạy trong ISOLATED world trên facebook.com
- * Nhiệm vụ:
- * 1. Nhận dữ liệu tin nhắn mới & sự kiện thu hồi từ injected.js.
- * 2. Chỉ theo dõi các dòng tin nhắn thực sự trong khung chat (div[data-scope="messages_table"]),
- *    không quét nhầm News Feed, Stories hay danh sách hội thoại bên ngoài.
- * 3. Phát hiện chính xác thông báo "đã xóa một tin nhắn" / "đã thu hồi một tin nhắn" mới xuất hiện,
- *    đối chiếu với tin nhắn vừa biến mất (Snapshot Diffing) hoặc dữ liệu đã lưu để khôi phục ngay lập tức.
- */
+// content.js - Đồng bộ dữ liệu tin nhắn, lưu trữ cục bộ và khôi phục trực tiếp trên giao diện Facebook
 
 (function () {
-  const LOG_PREFIX = '[FB-Unsend-Content]';
-  // Giữ khóa đồng bộ với popup.js và dùng cờ schema_v3_cleaned để dọn sạch các bản ghi bị bắt nhầm trước đó
   const STORAGE_KEY_MESSAGES = 'fb_captured_messages_v2';
   const STORAGE_KEY_UNSENT = 'fb_unsent_messages_v2';
   const STORAGE_KEY_CLEANED_FLAG = 'fb_unsend_schema_v4_cleaned';
@@ -21,7 +11,6 @@
   let recentMessagesList = [];
   let unsentMessagesList = [];
 
-  // Bộ đếm thời gian tăng dần tuyệt đối để giữ đúng thứ tự tin nhắn từ trên xuống dưới
   let lastTimestampCounter = 0;
   function getMonotonicTimestamp() {
     const now = Date.now();
@@ -37,15 +26,12 @@
     return !id || typeof id !== 'string' || id.startsWith('dom_') || id.startsWith('unsend_');
   }
 
-  // Ảnh chụp các dòng tin nhắn đang hiển thị trong khung chat hiện tại
   let visibleMessagesSnapshot = new Map();
   let isInitialScanDone = false;
 
-  // Mẫu nhận diện thông báo thu hồi / xóa tin nhắn trên Facebook (bao gồm "đã xóa một tin nhắn")
   const UNSEND_REGEX =
     /(đã xóa một tin nhắn|đã xoá một tin nhắn|bạn đã xóa một tin nhắn|bạn đã xoá một tin nhắn|đã thu hồi một tin nhắn|bạn đã thu hồi một tin nhắn|đã gỡ một tin nhắn|bạn đã gỡ một tin nhắn|tin nhắn đã bị thu hồi|tin nhắn đã được thu hồi|tin nhắn đã bị xóa|unsent a message|you unsent a message|deleted a message|you deleted a message|removed a message|message was unsent)/i;
 
-  // Các nhãn giao diện cần bỏ qua khi đọc text trong dòng chat
   const UI_IGNORE_REGEX =
     /^(Đã gửi|Đã nhận|Đã xem|Đang gửi|Đang viết|Sent|Delivered|Seen|Sending|Typing|Enter|Nhấn Enter để gửi|Được mã hóa đầu cuối|End-to-end encrypted|Trả lời|Reply|Chuyển tiếp|Forward|Xem thêm|See more|Bạn đã chuyển tiếp một tin nhắn|\d{1,2}:\d{2}(\s?[AP]M)?(\s+T\d|\s+CN)?)$/i;
 
@@ -54,7 +40,6 @@
     const valid = [];
     for (const url of attachments) {
       if (!url || typeof url !== 'string') continue;
-      // Loại bỏ URL media_fallback nội bộ (luôn bị lỗi sau khi gỡ) và URL ảnh đại diện Facebook
       if (
         url.includes('/messaging/lightspeed/media_fallback/') ||
         /\/t39\.30808-1\/|p50x50|p100x100|s100x100|p60x60|p40x40|dst-jpg_s\d+x\d+/i.test(url)
@@ -65,7 +50,6 @@
         valid.push(url);
       }
     }
-    // Nếu đã có ảnh data:image/webp (ảnh đã lưu đệm), ưu tiên giữ ảnh data:image/ để không bị trùng với URL mạng
     const dataUrls = valid.filter((u) => u.startsWith('data:image/'));
     return dataUrls.length > 0 ? dataUrls : valid;
   }
@@ -78,7 +62,6 @@
     }
   }
 
-  // Nhận diện ID và Tên thật của tài khoản Facebook đang đăng nhập để ánh xạ chính xác "Bạn" <-> Tên thật
   let currentUserId = '';
   let currentUserFullName = '';
 
@@ -90,22 +73,32 @@
           currentUserId = m[1];
         }
       }
-      if (!currentUserFullName && document.documentElement) {
+      if ((!currentUserFullName || !currentUserId) && document.documentElement) {
         const scripts = document.querySelectorAll('script');
         for (const s of scripts) {
           const txt = s.textContent || '';
           if (!txt.includes('CurrentUserInitialData')) continue;
-          const nameMatch = txt.match(
-            /"CurrentUserInitialData"\s*,\s*\[\]\s*,\s*\{[^}]*?"NAME"\s*:\s*"((?:[^"\\]|\\.)*)"/
-          );
-          if (nameMatch && nameMatch[1]) {
-            try {
-              currentUserFullName = JSON.parse(`"${nameMatch[1]}"`).trim();
-              if (currentUserFullName) break;
-            } catch (_) {
-              currentUserFullName = nameMatch[1].trim();
+          if (!currentUserId) {
+            const idMatch = txt.match(
+              /"CurrentUserInitialData"\s*,\s*\[\]\s*,\s*\{[^}]*?"(?:USER_ID|ACCOUNT_ID)"\s*:\s*"(\d+)"/
+            );
+            if (idMatch && idMatch[1] && idMatch[1] !== '0') {
+              currentUserId = idMatch[1];
             }
           }
+          if (!currentUserFullName) {
+            const nameMatch = txt.match(
+              /"CurrentUserInitialData"\s*,\s*\[\]\s*,\s*\{[^}]*?"NAME"\s*:\s*"((?:[^"\\]|\\.)*)"/
+            );
+            if (nameMatch && nameMatch[1]) {
+              try {
+                currentUserFullName = JSON.parse(`"${nameMatch[1]}"`).trim();
+              } catch (_) {
+                currentUserFullName = nameMatch[1].trim();
+              }
+            }
+          }
+          if (currentUserId && currentUserFullName) break;
         }
       }
     } catch (_) {}
@@ -136,7 +129,6 @@
 
   function inferRecordIsSelf(rec) {
     if (!rec) return false;
-    if (typeof rec.isSelf === 'boolean') return rec.isSelf;
     detectCurrentUserIdentity();
     if (currentUserId && rec.senderId) {
       return String(rec.senderId) === String(currentUserId);
@@ -147,11 +139,18 @@
       if (np && !isSelfKeyword(np)) return false;
     }
     if (isSelfKeyword(rec.personName)) return true;
+    if (currentUserFullName && rec.personName) {
+      if (rec.personName.trim().toLowerCase() === currentUserFullName.toLowerCase()) {
+        return true;
+      }
+    }
+    if (typeof rec.isSelf === 'boolean') return rec.isSelf;
     return false;
   }
 
   function sanitizeStoredRecord(msg) {
     if (!msg || typeof msg !== 'object') return msg;
+    const inferredSelf = inferRecordIsSelf(msg);
     const cleanThread = !isGenericSenderName(msg.threadName) ? String(msg.threadName).trim() : '';
     let cleanPerson = !isGenericSenderName(msg.personName) ? String(msg.personName).trim() : '';
     let cleanSender = String(msg.senderName || '').trim();
@@ -165,10 +164,13 @@
     } else if (isGenericSenderName(cleanSender)) {
       cleanSender = '';
     }
+    if (inferredSelf && currentUserFullName) {
+      cleanPerson = currentUserFullName;
+    }
     const finalSender = formatSenderAndThreadName(cleanPerson, cleanThread, cleanSender);
     return {
       ...msg,
-      isSelf: inferRecordIsSelf(msg),
+      isSelf: inferredSelf,
       personName: cleanPerson || msg.personName || '',
       threadName: cleanThread,
       senderName: finalSender,
@@ -188,7 +190,6 @@
           if (!isExtensionContextValid() || !res) return;
           try {
             if (!res[STORAGE_KEY_CLEANED_FLAG]) {
-              // Xóa 1 lần các bản ghi bị bắt nhầm hoặc nhân đôi từ phiên bản cũ
               chrome.storage.local.set({
                 [STORAGE_KEY_MESSAGES]: [],
                 [STORAGE_KEY_UNSENT]: [],
@@ -197,7 +198,6 @@
               recentMessagesList = [];
               unsentMessagesList = [];
               messagesById.clear();
-              console.log(`${LOG_PREFIX} Đã làm sạch dữ liệu cũ (v4) và sẵn sàng theo dõi chính xác.`);
               scheduleDomScan();
               return;
             }
@@ -236,10 +236,6 @@
             if (needsResave) {
               saveToStorage();
             }
-            console.log(
-              `${LOG_PREFIX} Đã sẵn sàng (${recentMessagesList.length} tin nhắn lưu tạm, ${unsentMessagesList.length} tin nhắn bị gỡ).`
-            );
-            // Quét lại khung chat ngay sau khi nạp xong dữ liệu từ Storage để khôi phục các tin nhắn bị gỡ sau khi F5
             scheduleDomScan();
           } catch (_) {}
         }
@@ -309,7 +305,6 @@
 
   function normalizeThreadTitle(name) {
     if (!name || typeof name !== 'string') return '';
-    // Loại bỏ dấu "..." hoặc "…" bị cắt ngắn trên thanh tiêu đề hộp chat nhỏ
     const cleaned = name.replace(/(?:\.\.\.|…)+$/g, '').trim();
     if (!cleaned || isGenericSenderName(cleaned)) return '';
     return cleaned;
@@ -318,7 +313,6 @@
   function isSameThreadName(threadA, threadB, senderNameB = '') {
     const a = normalizeThreadTitle(threadA).toLowerCase();
     const b = normalizeThreadTitle(threadB).toLowerCase();
-    // Nếu 1 trong 2 bên chưa lấy được tên nhóm (hoặc từng lưu nhầm là "Cuộc trò chuyện") thì cho phép khớp theo tên người gửi
     if (!a || !b) return true;
     if (a === b) return true;
     if (a.length >= 3 && b.length >= 3 && (a.includes(b) || b.includes(a))) {
@@ -340,7 +334,6 @@
 
   function extractNameFromNotice(noticeText) {
     if (!noticeText || typeof noticeText !== 'string') return '';
-    // Bỏ phần ": <nội dung khôi phục>" nếu chuỗi đã được nối
     const beforeColon = noticeText.split(':')[0] || noticeText;
     const cleaned = beforeColon
       .replace(
@@ -368,7 +361,6 @@
       if (pLower === tLower) {
         return cleanThread;
       }
-      // Nếu là chat 1-1 mà tên người gỡ là tên gọi ngắn nằm trong tên đầy đủ của hộp chat (VD: "Bình" trong "Nguyễn Trọng Bình")
       if (tLower.includes(pLower) && !isSelfKeyword(cleanPerson) && !cleanThread.includes('|')) {
         return cleanThread;
       }
@@ -397,7 +389,6 @@
     let existing = messagesById.get(msg.messageId);
     let duplicateIdx = -1;
 
-    // Nếu một bên là ID tạm (dom_...) và một bên là ID thật (mid.$...) của cùng 1 tin nhắn vừa gửi/nhận -> Gộp làm 1
     if (!existing && (msg.text || (msg.attachments && msg.attachments.length > 0))) {
       const cleanText = (msg.text || '').trim();
       const msgTime = msg.timestamp || Date.now();
@@ -493,9 +484,6 @@
     } catch (_) {}
   }
 
-  /**
-   * Thêm mới hoặc gộp bản ghi tin nhắn bị gỡ vào unsentMessagesList (chống nhân đôi giữa dom_... và mid.$...)
-   */
   function upsertUnsentRecord(newRecord) {
     const cleanText = (newRecord.text || '').trim();
     const cleanAttachments = sanitizeAttachmentsList(newRecord.attachments);
@@ -506,7 +494,6 @@
       if (u.messageId === newRecord.messageId) return true;
       if (newRecord.originalMessageId && u.messageId === newRecord.originalMessageId) return true;
 
-      // Nếu 1 bản ghi tạo từ DOM (dom_/unsend_) và 1 bản ghi từ mạng (mid.$) cho cùng 1 tin nhắn vừa gỡ -> Gộp làm 1
       const hasTempId = isTempDomId(u.messageId) || isTempDomId(newRecord.messageId);
       if (!hasTempId) return false;
 
@@ -546,7 +533,6 @@
         existingItem.personName ||
         '';
 
-      // Ưu tiên giữ tên cuộc trò chuyện đầy đủ hơn (VD: "RD Community | Đại hội..." thay vì "RD Community | ...")
       const threadCandA = !isGenericSenderName(newRecord.threadName) ? newRecord.threadName : '';
       const threadCandB = !isGenericSenderName(existingItem.threadName) ? existingItem.threadName : '';
       const bestThread =
@@ -737,7 +723,6 @@
           }
 
           // 2. Kiểm tra thẻ tiêu đề hiển thị thực tế ở thanh header phía trên cùng của khung chat
-          // (Bỏ qua các thẻ h1/h2/h3 ẩn 1x1px dành cho trình đọc màn hình hoặc nằm trong bảng tin nhắn)
           const containerRect = chatContainer.getBoundingClientRect();
           const headerSelectors = [
             'h1',
@@ -758,7 +743,6 @@
                 continue;
               }
               const rect = headerEl.getBoundingClientRect();
-              // Bỏ qua các thẻ ẩn (sr-only 1x1px) hoặc nằm bên dưới vùng thanh tiêu đề (quá 110px từ đỉnh khung chat)
               if (rect.width <= 4 || rect.height <= 4) continue;
               if (containerRect.height > 150 && rect.top > containerRect.top + 110) continue;
 
@@ -795,13 +779,9 @@
     return 'Facebook Chat';
   }
 
-  /**
-   * Trích xuất tên người gửi trực tiếp từ dòng tin nhắn DOM (trước hoặc sau khi gỡ)
-   */
   function extractSenderFromChatRow(rowEl) {
     if (!rowEl || !(rowEl instanceof HTMLElement)) return '';
 
-    // 1. Kiểm tra thẻ tiêu đề tên người gửi phía trên bong bóng chat (trong nhóm chat)
     const senderHeaders = rowEl.querySelectorAll('h4, h5, h6');
     for (const h of senderHeaders) {
       const raw = (h.innerText || h.textContent || '').trim().split('\n')[0];
@@ -817,7 +797,6 @@
       }
     }
 
-    // 2. Kiểm tra thuộc tính alt của ảnh avatar người gửi nằm cạnh bong bóng tin nhắn (bên trái)
     const rowRect = rowEl.getBoundingClientRect();
     const imgs = rowEl.querySelectorAll('img[alt]');
     for (const img of imgs) {
@@ -829,7 +808,6 @@
       ) {
         continue;
       }
-      // Avatar người gửi luôn có kích thước nhỏ (<= 52px) và nằm ở nửa bên trái của dòng chat
       const rect = img.getBoundingClientRect();
       const w = rect.width || img.clientWidth || img.width || 0;
       const isLeftAvatar =
@@ -842,10 +820,6 @@
     return '';
   }
 
-  /**
-   * Xác định chính xác dòng tin nhắn trên DOM thuộc về "Bạn" (bên phải, isSelf = true)
-   * hay thuộc về người khác (bên trái, isSelf = false)
-   */
   function detectRowIsSelf(rowEl, rowSenderName = '', noticeEl = null) {
     if (!rowEl || !(rowEl instanceof HTMLElement)) return false;
 
@@ -858,15 +832,12 @@
 
     if (rowSenderName) {
       if (isSelfKeyword(rowSenderName)) return true;
-      // Trên DOM của Facebook Messenger, tin nhắn của chính mình luôn có header là "Bạn đã gửi" / "You sent",
-      // còn nếu header/avatar ghi tên cụ thể (kể cả trùng tên "Bình") thì đó là thành viên khác ở bên trái
       return false;
     }
 
     if (rowEl.dataset?.fbUnsendIsSelf === 'true') return true;
     if (rowEl.dataset?.fbUnsendIsSelf === 'false') return false;
 
-    // Kiểm tra vị trí hình học của bong bóng chat (bên phải = Bạn, bên trái = Người khác)
     try {
       const rowRect = rowEl.getBoundingClientRect();
       const targetEl =
@@ -887,13 +858,9 @@
     return false;
   }
 
-  /**
-   * Kiểm tra xem thẻ <img> có phải là avatar người gửi, icon cảm xúc, hay lớp ảnh nền làm mờ (blur) của Facebook không
-   */
   function isAvatarOrDecorativeImage(imgEl, rawSrc, rowSenderName = '') {
     if (!rawSrc || rawSrc.startsWith('data:image/svg')) return true;
 
-    // 1. Chặn theo mẫu URL của ảnh đại diện (profile picture /t39.30808-1/), emoji hoặc tài nguyên tĩnh Facebook
     if (
       /\/t39\.30808-1\/|p50x50|p100x100|s100x100|p60x60|p40x40|dst-jpg_s\d+x\d+|emoji\.php|rsrc\.php|static\.xx\.fbcdn\.net/i.test(
         rawSrc
@@ -902,18 +869,15 @@
       return true;
     }
 
-    // 2. Chỉ lấy ảnh đã tải hoàn tất và có kích thước gốc đủ lớn (> 64x64)
     if (!imgEl.complete || imgEl.naturalWidth <= 64 || imgEl.naturalHeight <= 64) {
       return true;
     }
 
-    // 3. Kiểm tra kích thước hiển thị thực tế trên màn hình (TUYỆT ĐỐI không fallback sang imgEl.width vì sẽ trả về naturalWidth)
     const rect = imgEl.getBoundingClientRect();
     if (rect.width <= 58 || rect.height <= 58) {
       return true;
     }
 
-    // 4. Kiểm tra thuộc tính alt: Ảnh đại diện luôn có alt là tên người gửi hoặc "Đã xem bởi..."
     const alt = (imgEl.getAttribute('alt') || '').trim();
     if (alt) {
       if (/^(Đã xem|Seen by)/i.test(alt)) return true;
@@ -924,9 +888,6 @@
       return true;
     }
 
-    // 5. Kiểm tra CSS của ảnh và 3 cấp thẻ cha:
-    // - Chặn ảnh nền làm mờ (filter: blur(...)) mà Facebook chèn phía sau ảnh chính
-    // - Chặn ảnh đại diện hình tròn (border-radius: 50%) hoặc khung nhỏ <= 58px
     let curr = imgEl;
     for (let depth = 0; depth < 4 && curr && curr instanceof HTMLElement; depth++) {
       try {
@@ -957,11 +918,7 @@
     return false;
   }
 
-  /**
-   * Chuyển ảnh (đặc biệt là ảnh E2EE dạng blob: vốn sẽ bị Facebook thu hồi ngay khi gỡ)
-   * sang dạng Data URL (webp nén nhẹ) để giữ lại vĩnh viễn khi tin nhắn bị xóa
-   */
-  const cachedImageMap = new Map(); // rawSrc -> dataUrl
+  const cachedImageMap = new Map();
   function getOrCacheImageSrc(imgEl) {
     const rawSrc = imgEl.currentSrc || imgEl.src || '';
     if (!rawSrc) return '';
@@ -999,29 +956,15 @@
     return rawSrc;
   }
 
-  /**
-   * Lấy danh sách các phần tử dòng tin nhắn THỰC SỰ nằm trong cửa sổ chat đang mở
-   * Trên Facebook, mỗi cụm/dòng tin nhắn trong khung chat luôn có div[data-scope="messages_table"]
-   */
   function getActualChatRows() {
     if (!document.body) return [];
     const rows = Array.from(document.querySelectorAll('div[data-scope="messages_table"]'));
     return rows.filter((row) => {
-      // Loại bỏ nếu nằm trong menu danh sách hội thoại bên ngoài
       if (row.closest('[aria-label="Đoạn chat"], [aria-label="Chats"]')) return false;
       return true;
     });
   }
 
-  /**
-   * Trích xuất nội dung của một dòng tin nhắn trong khung chat:
-   * Phân biệt rõ:
-   * - isUnsentRow: Dòng này đang hiển thị câu "Bình đã xóa một tin nhắn" / "đã thu hồi một tin nhắn"
-   * - text: Nội dung văn bản của tin nhắn (không lấy tên người gửi ở đầu dòng)
-   * - attachments: Hình ảnh / Video / Sticker trong tin nhắn (đã lọc sạch avatar & ảnh nền mờ)
-   * - rowSenderName: Tên người gửi trích xuất từ dòng chat
-   * - isSelf: Dòng tin nhắn của chính mình (bên phải) hay của người khác (bên trái)
-   */
   function analyzeChatRow(rowEl) {
     if (!rowEl || !(rowEl instanceof HTMLElement)) {
       return {
@@ -1037,7 +980,6 @@
 
     const rowSenderName = extractSenderFromChatRow(rowEl);
 
-    // Nếu dòng này đã được khôi phục trước đó thì bỏ qua ngay, không quét lại
     if (
       rowEl.dataset.fbUnsendRestored === 'true' ||
       rowEl.querySelector('.fb-unsend-restored-bubble, .fb-unsend-inline-text')
@@ -1053,7 +995,6 @@
       };
     }
 
-    // 1. Kiểm tra xem dòng này có chứa thông báo thu hồi / xóa tin nhắn không
     let unsentNoticeEl = null;
     const allElements = rowEl.querySelectorAll('div, span');
     for (const el of allElements) {
@@ -1078,7 +1019,6 @@
       };
     }
 
-    // 2. Nếu là dòng tin nhắn bình thường -> Trích xuất văn bản tin nhắn (kèm cả icon emoji <img alt="🐕">)
     const extractNodeTextWithEmoji = (node) => {
       if (!node) return '';
       if (node.nodeType === Node.TEXT_NODE) {
@@ -1119,7 +1059,6 @@
       }
     });
 
-    // Trường hợp tin nhắn chỉ gửi độc lập 1 icon cảm xúc lớn (VD: 🐕, ❤️, 👍) nằm ngoài div[dir="auto"]
     if (texts.length === 0) {
       rowEl.querySelectorAll('img[src*="emoji.php"][alt]').forEach((emojiImg) => {
         if (emojiImg.closest('[aria-label*="cảm xúc"], [aria-label*="reaction"], [role="button"][tabindex="0"]')) {
@@ -1132,7 +1071,6 @@
       });
     }
 
-    // 3. Trích xuất hình ảnh / sticker / video trong dòng tin nhắn (bỏ qua avatar người gửi & ảnh nền mờ)
     const attachments = [];
     const seenPhotoContainers = new Set();
 
@@ -1145,7 +1083,6 @@
           return;
         }
 
-        // Mỗi khung ảnh (a[role="link"] hoặc div[role="button"]) chỉ lấy tối đa 1 thẻ <img> chính
         const photoContainer = mediaEl.closest('a[role="link"], div[role="button"]');
         if (photoContainer) {
           if (seenPhotoContainers.has(photoContainer)) return;
@@ -1175,9 +1112,6 @@
     };
   }
 
-  /**
-   * So sánh tên người gửi (có xét tách biệt giữa Bạn và thành viên khác trùng tên)
-   */
   function isSamePersonName(nameA, nameB, allowSelfAlias = false) {
     const a = (nameA || '').trim().toLowerCase();
     const b = (nameB || '').trim().toLowerCase();
@@ -1185,6 +1119,9 @@
     if (a === b) return true;
     if (allowSelfAlias && isCurrentUserName(a) && isCurrentUserName(b)) {
       return true;
+    }
+    if (!allowSelfAlias && (isCurrentUserName(a) || isCurrentUserName(b))) {
+      return false;
     }
     if (a.length >= 2 && b.length >= 2 && !isSelfKeyword(a) && !isSelfKeyword(b)) {
       if (a.includes(b) || b.includes(a)) {
@@ -1202,16 +1139,10 @@
     );
   }
 
-  /**
-   * Đối chiếu các dòng "đã xóa một tin nhắn" trên khung chat với lịch sử unsentMessagesList đã lưu
-   * để tự động hiện lại tin nhắn bị gỡ sau khi tải lại trang (F5) hoặc mở lại cuộc trò chuyện
-   */
   function matchUnsentRowsFromSavedHistory(unmatchedRows) {
     if (!unmatchedRows.length || !unsentMessagesList.length) return new Map();
 
     const rowToRecordMap = new Map();
-
-    // Tách riêng từng khung chat (VD: trang /messages/t/... có thể có cả khung chính role="main" và bong bóng chat role="dialog")
     const rowsByContainer = new Map();
     for (const item of unmatchedRows) {
       const container = getChatContainerForRow(item.rowEl);
@@ -1224,7 +1155,6 @@
     for (const [container, containerRows] of rowsByContainer.entries()) {
       const usedMessageIds = new Set();
 
-      // Chỉ ghi nhận các messageId đã dùng trong CÙNG khung chat này
       container
         .querySelectorAll('div[data-scope="messages_table"][data-fb-unsend-matched-id]')
         .forEach((el) => {
@@ -1233,7 +1163,6 @@
           }
         });
 
-      // Bước 1: Khớp chính xác tuyệt đối theo Message ID (mid.$...) từ React Fiber trên chính rowEl
       const remainingRows = [];
       for (const item of containerRows) {
         const fiberId = item.rowEl.dataset?.fbMsgId;
@@ -1250,8 +1179,6 @@
 
       if (remainingRows.length === 0) continue;
 
-      // Bước 2: Gom nhóm các dòng chưa có mid.$ theo (Phía gửi isSelf + Tên người gỡ + Tên cuộc trò chuyện)
-      // Tuyệt đối không bao giờ trộn dòng của Bạn (isSelf=true, bên phải) với dòng của người khác (isSelf=false, bên trái)
       const groups = new Map();
       for (const item of remainingRows) {
         const noticeText = (item.noticeEl?.textContent || '').trim();
@@ -1259,14 +1186,16 @@
         const noticePerson = rowIsSelf
           ? 'Bạn'
           : extractNameFromNotice(noticeText) || item.rowSenderName || '';
+        const anchorKey = (item.anchorAboveText || '').trim().toLowerCase();
         const groupKey = `${rowIsSelf ? 'SELF' : 'OTHER'}__${noticePerson.toLowerCase()}__${(
           item.threadName || ''
-        ).toLowerCase()}`;
+        ).toLowerCase()}__${anchorKey}`;
         if (!groups.has(groupKey)) {
           groups.set(groupKey, {
             rowIsSelf,
             noticePerson,
             threadName: item.threadName || '',
+            anchorAboveText: (item.anchorAboveText || '').trim(),
             rows: []
           });
         }
@@ -1274,27 +1203,37 @@
       }
 
       for (const group of groups.values()) {
-        const { rowIsSelf, noticePerson, threadName, rows } = group;
+        const { rowIsSelf, noticePerson, threadName, anchorAboveText, rows } = group;
         const pLower = noticePerson.toLowerCase();
+        const hasFiberOnAllRows = rows.every((r) => Boolean(r.rowEl.dataset?.fbMsgId));
 
         const candidates = unsentMessagesList.filter((u) => {
           if (usedMessageIds.has(u.messageId)) return false;
           if (!u.text && (!u.attachments || u.attachments.length === 0)) return false;
 
+          if (hasFiberOnAllRows && u.messageId && u.messageId.startsWith('mid.$')) {
+            return false;
+          }
+
           const uIsSelf = inferRecordIsSelf(u);
-          // BẮT BUỘC khớp đúng phía gửi: Dòng bên trái (người khác) không bao giờ lấy bản ghi của Bạn (bên phải) và ngược lại
           if (uIsSelf !== rowIsSelf) return false;
 
           if (!isSameThreadName(threadName, u.threadName, u.senderName)) {
             return false;
           }
 
-          // Nếu cả dòng và bản ghi đều là của Bạn (isSelf === true) trong cùng cuộc trò chuyện -> Khớp!
+          const uAnchor = (u.anchorAboveText || '').trim();
+          if (anchorAboveText && uAnchor && anchorAboveText !== uAnchor) {
+            return false;
+          }
+          if (hasFiberOnAllRows && (!anchorAboveText || !uAnchor)) {
+            return false;
+          }
+
           if (rowIsSelf) {
             return true;
           }
 
-          // Nếu là tin nhắn của người khác ở bên trái -> So khớp tên người gửi (không dùng tên của Bạn để bắc cầu)
           if (!pLower) return true;
           const uPerson = (u.personName || '').trim();
           const uSenderParts = (u.senderName || '').split('•').map((s) => s.trim());
@@ -1308,9 +1247,6 @@
 
         if (candidates.length === 0) continue;
 
-        // Lấy tối đa rows.length bản ghi gần nhất của người đó trong cuộc trò chuyện này,
-        // sau đó SẮP XẾP THEO THỜI ĐIỂM GỬI TIN NHẮN GỐC TĂNG DẦN (timestamp cũ -> mới)
-        // để luôn hiển thị đúng thứ tự s1 -> s2 -> s3 từ trên xuống dưới sau khi F5!
         const selected = candidates
           .slice(0, rows.length)
           .sort((a, b) => {
@@ -1324,6 +1260,10 @@
           const targetRow = rows[startRowOffset + i];
           const record = selected[i];
           if (targetRow && record) {
+            const rowFiber = targetRow.rowEl.dataset?.fbMsgId;
+            if (rowFiber && record.messageId && record.messageId.startsWith('mid.$') && rowFiber !== record.messageId) {
+              continue;
+            }
             rowToRecordMap.set(targetRow.rowEl, record);
             usedMessageIds.add(record.messageId);
           }
@@ -1334,9 +1274,6 @@
     return rowToRecordMap;
   }
 
-  /**
-   * Quét toàn bộ các dòng tin nhắn trong khung chat
-   */
   function scanChatMessagesInDom(specificRecord = null) {
     const chatRows = getActualChatRows();
     if (chatRows.length === 0) return;
@@ -1357,7 +1294,6 @@
         : '';
       const noticePerson = extractNameFromNotice(noticeText);
 
-      // Chỉ lưu tên thành viên khác (bên trái) để kế thừa cho các bong bóng liên tiếp cùng cụm bên trái
       if (!analysis.isSelf) {
         const knownOtherName =
           (!isSelfKeyword(analysis.rowSenderName) && analysis.rowSenderName) ||
@@ -1403,7 +1339,6 @@
         const prev = domRowMessages.get(rowEl);
         const fiberMsgId = rowEl.dataset?.fbMsgId || '';
 
-        // Kiểm tra xem React có tái sử dụng node DOM này cho một tin nhắn khác khi cuộn trang / đổi đoạn chat không
         const isRecycledNode =
           prev &&
           ((fiberMsgId && prev.fiberMsgId && fiberMsgId !== prev.fiberMsgId) ||
@@ -1426,7 +1361,6 @@
           safePrev?.messageId ||
           `dom_${getMonotonicTimestamp()}_${index}_${Math.random().toString(36).slice(2, 6)}`;
 
-        // Nếu dòng này vừa được gắn mid.$ từ React Fiber, chuyển dữ liệu từ ID tạm dom_... sang mid.$
         if (safePrev && safePrev.messageId && fiberMsgId && safePrev.messageId !== fiberMsgId) {
           currentActiveIds.add(safePrev.messageId);
           messagesById.delete(safePrev.messageId);
@@ -1473,7 +1407,6 @@
 
         domRowMessages.set(rowEl, record);
 
-        // CHỈ lưu dữ liệu trên chính rowEl của dòng đó, TUYỆT ĐỐI KHÔNG lưu lên rowEl.parentElement
         if (fiberMsgId) {
           rowEl.dataset.fbUnsendSavedMid = fiberMsgId;
         }
@@ -1499,23 +1432,15 @@
           JSON.stringify(record.attachments) !== JSON.stringify(safePrev.attachments || []);
 
         if (!safePrev || attachmentsUpgraded) {
-          if (!safePrev) {
-            console.log(
-              `${LOG_PREFIX} 💬 Đã ghi nhận tin nhắn trong khung chat [${record.senderName}]:`,
-              record.text || `(Đính kèm ${record.attachments.length} media)`
-            );
-          }
           handleCapturedMessage(record);
         }
       }
     });
 
-    // Tìm các tin nhắn thực sự biến mất khỏi khung chat (loại bỏ hoàn toàn trường hợp đổi ID từ dom_ sang mid.$ hoặc dòng vẫn đang hiển thị bình thường)
     const disappearedMessages = [];
     if (isInitialScanDone && visibleMessagesSnapshot.size > 0) {
       for (const [id, oldRec] of visibleMessagesSnapshot.entries()) {
         if (currentActiveIds.has(id)) continue;
-        // Nếu phần tử DOM của tin nhắn đó vẫn đang nằm trên màn hình và KHÔNG phải dòng thông báo gỡ -> Tin nhắn đó CHƯA HỀ BỊ GỠ!
         if (oldRec.rowEl && oldRec.rowEl.isConnected) {
           const checkNow = analyzeChatRow(oldRec.rowEl);
           if (!checkNow.isUnsentRow) {
@@ -1526,8 +1451,6 @@
       }
     }
 
-    // Nếu vừa có sự kiện gỡ trực tiếp (specificRecord) và trên khung chat xuất hiện dòng "Bạn đã xóa một tin nhắn",
-    // tự động ghi nhận tên thật của người dùng từ specificRecord để khớp 100%
     if (
       specificRecord &&
       specificRecord.personName &&
@@ -1544,10 +1467,8 @@
       }
     }
 
-    // Đối chiếu trước các dòng thông báo xóa với lịch sử unsentMessagesList (dùng khi người dùng F5 tải lại trang hoặc mở /messages/t/...)
     const historyMatchedMap = matchUnsentRowsFromSavedHistory(currentUnsentRows);
 
-    // Xử lý các dòng có thông báo "đã xóa một tin nhắn" / "đã thu hồi một tin nhắn"
     currentUnsentRows.forEach(
       ({
         rowEl,
@@ -1565,7 +1486,6 @@
         const noticePerson = extractNameFromNotice(noticeTextBeforeRestore) || rowSenderName || '';
         const fiberId = rowEl.dataset?.fbMsgId || '';
 
-        // Hàm kiểm tra nghiêm ngặt: Dữ liệu khôi phục bắt buộc phải khớp phía gửi (isSelf) và tên người gỡ
         const isRecordValidForThisRow = (cand) => {
           if (!cand || (!cand.text && (!cand.attachments || cand.attachments.length === 0))) {
             return false;
@@ -1584,19 +1504,19 @@
         };
 
         let restored = null;
+        let restoredFromHistory = false;
 
-        // Cách 1: Khớp chính xác theo Message ID (mid.$...) từ React Fiber trên dòng hiện tại
         if (fiberId) {
           const fromUnsent = unsentMessagesList.find((u) => u.messageId === fiberId);
           const fromCaptured = messagesById.get(fiberId);
           if (isRecordValidForThisRow(fromUnsent)) {
             restored = fromUnsent;
+            restoredFromHistory = true;
           } else if (isRecordValidForThisRow(fromCaptured)) {
             restored = fromCaptured;
           }
         }
 
-        // Cách 2: Kiểm tra bộ nhớ gắn trực tiếp trên chính rowEl (khi vừa xóa trực tiếp trên màn hình)
         if (!restored) {
           const memRec = domRowMessages.get(rowEl);
           if (isRecordValidForThisRow(memRec)) {
@@ -1604,7 +1524,6 @@
           }
         }
 
-        // Cách 3: Kiểm tra dataset lưu trên chính rowEl (TUYỆT ĐỐI KHÔNG đọc từ parentElement)
         if (!restored) {
           const savedMid = rowEl.dataset?.fbUnsendSavedMid || '';
           const midConsistent = !fiberId || !savedMid || fiberId === savedMid;
@@ -1635,7 +1554,6 @@
           }
         }
 
-        // Cách 4: Snapshot Diffing - chỉ ghép nếu tin nhắn biến mất trong CÙNG khung chat, CÙNG vị trí dòng (lệch <= 1) và CÙNG phía gửi
         if (!restored && !rowEl.dataset.fbUnsendOldNotice && disappearedMessages.length > 0) {
           const matchIdx = disappearedMessages.findIndex(
             (oldRec) =>
@@ -1648,7 +1566,6 @@
           }
         }
 
-        // Cách 5: Nếu vừa nhận sự kiện gỡ trực tiếp từ injected.js (specificRecord) và chưa dòng nào khác nhận
         if (
           !restored &&
           specificRecord &&
@@ -1669,25 +1586,40 @@
           }
         }
 
-        // Cách 6: Khôi phục từ lịch sử đã lưu trong chrome.storage.local (sau khi tải lại trang F5 / mở đoạn chat)
         if (!restored && historyMatchedMap.has(rowEl)) {
           const histCand = historyMatchedMap.get(rowEl);
           if (isRecordValidForThisRow(histCand)) {
             restored = histCand;
+            restoredFromHistory = true;
           }
         }
 
-        // Nếu tìm được nội dung gốc hợp lệ -> Khôi phục ngay lên màn hình + Lưu/Cập nhật lịch sử (không nhân đôi)
         if (
           restored &&
           (restored.text || (restored.attachments && restored.attachments.length > 0))
         ) {
           const cleanRestored = {
             ...restored,
-            isSelf,
+            isSelf: typeof restored.isSelf === 'boolean' ? restored.isSelf : isSelf,
             attachments: sanitizeAttachmentsList(restored.attachments)
           };
           if (!cleanRestored.text && cleanRestored.attachments.length === 0) return;
+
+          renderRestoredContentInDom(rowEl, noticeEl, cleanRestored);
+
+          if (restoredFromHistory && cleanRestored.messageId) {
+            rowEl.dataset.fbUnsendMatchedId = cleanRestored.messageId;
+            if (!cleanRestored.threadName && !isGenericSenderName(threadName)) {
+              cleanRestored.threadName = threadName;
+              cleanRestored.senderName = formatSenderAndThreadName(
+                cleanRestored.personName,
+                threadName,
+                cleanRestored.senderName
+              );
+              saveToStorage();
+            }
+            return;
+          }
 
           const rawPerson =
             (!isSelfKeyword(cleanRestored.personName) && cleanRestored.personName) ||
@@ -1714,9 +1646,7 @@
           const initialMsgId =
             fiberId || cleanRestored.messageId || `unsend_${getMonotonicTimestamp()}`;
 
-          renderRestoredContentInDom(rowEl, noticeEl, cleanRestored);
-
-          const { record: syncedRecord, isNew } = upsertUnsentRecord({
+          const { record: syncedRecord } = upsertUnsentRecord({
             messageId: initialMsgId,
             originalMessageId: cleanRestored.messageId || '',
             isSelf,
@@ -1734,13 +1664,6 @@
           });
 
           rowEl.dataset.fbUnsendMatchedId = syncedRecord.messageId;
-
-          if (isNew) {
-            console.log(
-              `${LOG_PREFIX} 🚨 ĐÃ KHÔI PHỤC TIN NHẮN BỊ GỠ [${syncedRecord.senderName}]:`,
-              syncedRecord.text || `(Đính kèm ${syncedRecord.attachments.length} media)`
-            );
-          }
         } else {
           rowEl.dataset.fbUnsendOldNotice = 'true';
         }
@@ -1751,9 +1674,6 @@
     isInitialScanDone = true;
   }
 
-  /**
-   * Tìm phần tử bong bóng gốc có chứa viền (border / border-radius) bao quanh câu "Bình đã xóa một tin nhắn"
-   */
   function findOriginalBubbleElement(noticeEl, rowEl) {
     let curr = noticeEl;
     let roundedCandidate = null;
@@ -1777,10 +1697,6 @@
     return roundedCandidate || noticeEl.parentElement || noticeEl;
   }
 
-  /**
-   * Hiển thị hộp thoại phóng to ảnh (Lightbox) ngay trên trang Facebook và hỗ trợ tải ảnh về máy
-   * (Khắc phục việc trình duyệt chặn window.open đối với ảnh data:image/webp;base64,...)
-   */
   function openImageLightbox(url) {
     if (!url || !document.body) return;
     const existing = document.getElementById('fb-unsend-lightbox-overlay');
@@ -1827,22 +1743,15 @@
     document.body.appendChild(overlay);
   }
 
-  /**
-   * Đổi viền gốc của bong bóng tin nhắn sang đỏ và nối nội dung trực tiếp thành:
-   * "Bình đã xóa một tin nhắn: <nội dung>"
-   */
   function renderRestoredContentInDom(rowEl, noticeEl, data) {
     if (!noticeEl || rowEl.dataset.fbUnsendRestored === 'true') return;
     rowEl.dataset.fbUnsendRestored = 'true';
 
-    // 1. Chuyển viền gốc của bong bóng tin nhắn thành màu đỏ
     const bubbleEl = findOriginalBubbleElement(noticeEl, rowEl);
     if (bubbleEl) {
       bubbleEl.classList.add('fb-unsend-restored-bubble');
     }
 
-    // 2. Thay "Bình đã xóa một tin nhắn" thành "Bình đã xóa một tin nhắn: <nội dung>"
-    // Luôn đặt lại textContent của noticeEl để đảm bảo có dấu ": " tách biệt rõ ràng
     const baseText = (noticeEl.textContent || '').trim().replace(/[:.\s]+$/, '');
     const cleanAttachments = sanitizeAttachmentsList(data.attachments);
 
@@ -1856,7 +1765,6 @@
       noticeEl.textContent = `${baseText}:`;
     }
 
-    // 3. Nếu có đính kèm hình ảnh / sticker thì hiển thị ngay bên dưới câu chữ trong cùng bong bóng
     if (cleanAttachments.length > 0) {
       const mediaContainer = document.createElement('div');
       mediaContainer.className = 'fb-unsend-media-list';
@@ -1869,7 +1777,6 @@
           e.stopPropagation();
           openImageLightbox(url);
         });
-        // Tự động ẩn nếu URL ảnh cũ đã hết hạn để không hiện khung ảnh lỗi
         img.addEventListener('error', () => {
           img.remove();
         });
@@ -1879,9 +1786,6 @@
     }
   }
 
-  /**
-   * Hiển thị thông báo nổi (Toast) ở góc dưới màn hình khi có tin nhắn bị gỡ
-   */
   function showUnsentToast(record) {
     if (!document.body) return;
 
@@ -1957,7 +1861,6 @@
   function scheduleDomScan() {
     if (domScanScheduled) return;
     domScanScheduled = true;
-    // Yêu cầu injected.js gắn data-fb-msg-id (mid.$...) từ React Fiber ngay lập tức trước khi quét DOM
     requestMainWorldFiberScan();
     setTimeout(() => {
       domScanScheduled = false;
@@ -1965,7 +1868,6 @@
     }, 60);
   }
 
-  // Đồng bộ tức thời giữa các tab (VD: vừa gỡ ở tab facebook.com thì tab /messages/t/... cập nhật ngay)
   try {
     if (isExtensionContextValid() && chrome.storage?.onChanged) {
       chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -2008,7 +1910,6 @@
       return;
     }
 
-    // Đợi 1 giây sau khi trang khởi tạo xong để không ảnh hưởng quá trình Hydrate của React (#418)
     setTimeout(() => {
       scheduleDomScan();
 
@@ -2027,7 +1928,6 @@
         characterData: true
       });
 
-      // Quét bổ sung định kỳ nhẹ để bắt các trường hợp chuyển đoạn chat SPA trên /messages/t/...
       let lastHref = location.href;
       setInterval(() => {
         if (location.href !== lastHref) {
@@ -2036,7 +1936,6 @@
           setTimeout(scheduleDomScan, 400);
           setTimeout(scheduleDomScan, 1000);
         } else if (unsentMessagesList.length > 0) {
-          // Nếu trên trang có dòng thông báo xóa chưa được khôi phục thì thử đối chiếu lại
           const unm = document.querySelector(
             'div[data-scope="messages_table"]:not([data-fb-unsend-restored="true"])'
           );

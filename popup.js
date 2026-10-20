@@ -1,12 +1,9 @@
-/**
- * popup.js - Quản lý hiển thị, bộ lọc đa chiều, Xuất/Nhập Backup (JSON) và Lightbox ảnh
- */
+// popup.js - Quản lý giao diện lịch sử tin nhắn thu hồi, bộ lọc, Xuất/Nhập Backup (JSON) và Lightbox
 
 const STORAGE_KEY_MESSAGES = 'fb_captured_messages_v2';
 const STORAGE_KEY_UNSENT = 'fb_unsent_messages_v2';
 const STORAGE_KEY_CLEANED_FLAG = 'fb_unsend_schema_v4_cleaned';
 
-// DOM Elements
 const unsentListEl = document.getElementById('unsent-list');
 const statTotalEl = document.getElementById('stat-total');
 const statOthersEl = document.getElementById('stat-others');
@@ -162,8 +159,7 @@ function updateStatsAndThreadOptions() {
   let othersCount = 0;
   let mediaCount = 0;
 
-  // Gom nhóm cuộc trò chuyện thông minh (ưu tiên tên đầy đủ nhất nếu bị cắt ngắn bởi "...")
-  const threadGroups = []; // [{ key, label, count }]
+  const threadGroups = [];
 
   allUnsentMessages.forEach((item) => {
     const { thread, isSelf } = parseRecordNames(item);
@@ -196,7 +192,6 @@ function updateStatsAndThreadOptions() {
   statMediaEl.textContent = String(mediaCount);
   statCachedEl.textContent = String(allCapturedMessages.length);
 
-  // Cập nhật danh sách chọn cuộc trò chuyện
   const previousValue = threadFilterEl.value;
   threadFilterEl.innerHTML = '';
 
@@ -295,7 +290,6 @@ function renderList() {
     const card = document.createElement('div');
     card.className = `unsent-card${isSelf ? ' self-card' : ''}`;
 
-    // Top Header
     const top = document.createElement('div');
     top.className = 'card-top';
 
@@ -357,7 +351,6 @@ function renderList() {
     top.appendChild(timeGroup);
     card.appendChild(top);
 
-    // Body Text
     if (item.text) {
       const bodyDiv = document.createElement('div');
       bodyDiv.className = 'card-body';
@@ -365,7 +358,6 @@ function renderList() {
       card.appendChild(bodyDiv);
     }
 
-    // Attachments
     if (cleanAttachments.length > 0) {
       const mediaDiv = document.createElement('div');
       mediaDiv.className = 'card-media';
@@ -386,7 +378,6 @@ function renderList() {
       card.appendChild(mediaDiv);
     }
 
-    // Card Footer (Anchor Hint + Actions)
     const footer = document.createElement('div');
     footer.className = 'card-footer';
 

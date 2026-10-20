@@ -1,36 +1,19 @@
-/**
- * injected.js - Chạy trong MAIN world ở thời điểm document_start trên facebook.com
- * Phiên bản v3.3:
- * 1. Quét toàn bộ mảng Int64 [high32, low32] trong tham số của LSUpsertMessage / LSDeleteThenInsertMessage
- *    để lấy đúng timestamp 13 chữ số, chặn triệt để 100% tin nhắn cũ từ lịch sử khi mới tải trang.
- * 2. Bắt trực tiếp văn bản giải mã E2EE từ MAWVault thông qua TextDecoder.prototype.decode
- *    (nhận diện qua chữ ký Array.reduce của MAWVault) ngay cả khi đang ở tab khác.
- * 3. Hoàn toàn không can thiệp vào SharedWorker/MessagePort/MAWBridge để khung chat E2EE hoạt động ổn định.
- */
+// injected.js - Theo dõi luồng dữ liệu Messenger/Lightspeed/E2EE và React Fiber (MAIN World)
 
 (function () {
   if (window.__FB_UNSEND_INJECTED__) return;
   window.__FB_UNSEND_INJECTED__ = true;
 
-  const LOG_PREFIX = '[FB-Unsend-Tracker]';
   const PAGE_LOAD_TIME = Date.now();
-  // Thời gian ân hạn khi mới mở trang (6 giây đầu đang nạp lịch sử E2EE sẵn có trên màn hình)
   const INITIAL_SYNC_GRACE_MS = 6000;
-
-  console.log(
-    `%c${LOG_PREFIX} Đã kích hoạt bộ theo dõi dữ liệu ngầm v3.3 (Hỗ trợ MAWVault E2EE + Lọc triệt để lịch sử cũ).`,
-    'background: #1877f2; color: #fff; font-weight: bold; padding: 3px 8px; border-radius: 4px;'
-  );
 
   const capturedMessages = new Map();
   const aliasIdMap = new Map();
   const processedNodes = new WeakSet();
   const vaultMap = new Map();
-  // Lưu ánh xạ ID người dùng -> Tên đầy đủ và ID nhóm -> Tên nhóm từ dữ liệu ngầm Lightspeed
   const contactNameMap = new Map();
   const threadNameMap = new Map();
-  // Lưu các chuỗi E2EE đã thấy để chống trùng lặp khi React render lại nhiều lần
-  const seenE2EETexts = new Map(); // text -> messageId
+  const seenE2EETexts = new Map();
   let lastE2EEMessageId = null;
   let mawUnvaultFn = null;
 
@@ -49,9 +32,6 @@
     return '';
   }
 
-  /**
-   * Chuyển đổi mảng 64-bit [high32, low32] hoặc [19, "str"] của Facebook Lightspeed sang chuỗi số nguyên
-   */
   function parseLSInt64(val) {
     if (!Array.isArray(val) || val.length !== 2) return null;
     if (val[0] === 19 && typeof val[1] === 'string') {
@@ -162,7 +142,6 @@
     if (trimmed.length === 0) return true;
     if (isSystemNoticeText(trimmed)) return true;
 
-    // Loại bỏ chuỗi JSON hoặc mảnh cắt JSON từ luồng mạng
     if (
       (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
       (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
@@ -258,10 +237,6 @@
     return aliasIdMap.get(strId) || strId;
   }
 
-  /**
-   * Kiểm tra xem timestamp (ms) có phải là tin nhắn cũ từ trước khi mở trang hay không.
-   * Bất kỳ tin nhắn nào không có timestamp hợp lệ hoặc cũ hơn 15 giây trước khi mở trang đều bị chặn.
-   */
   function isOldHistoricalTimestamp(ts) {
     if (!ts || typeof ts !== 'number') return true;
     if (ts < 1577836800000 || ts > 2051222400000) return true;
@@ -356,7 +331,6 @@
     const existing = capturedMessages.get(messageId);
     if (!cleanText && cleanAttachments.length === 0) return;
 
-    // Ưu tiên văn bản chính thức từ args[0] của module LSUpsertMessage/LSDeleteThenInsertMessage
     const isAuthoritativeModule =
       typeof source === 'string' && /^module:LS(Upsert|DeleteThenInsert|Insert)Message/i.test(source);
     const finalText =
@@ -405,10 +379,6 @@
     capturedMessages.set(messageId, updatedRecord);
 
     if (isActuallyNew) {
-      console.log(
-        `${LOG_PREFIX} 📩 Đã bắt ngầm tin nhắn [${messageId}] (${updatedRecord.senderName || updatedRecord.source}):`,
-        updatedRecord.text || `(Đính kèm: ${updatedRecord.attachments.length} media)`
-      );
       emitToContentScript('FB_MSG_CAPTURED', updatedRecord);
     }
   }
@@ -445,11 +415,6 @@
 
     capturedMessages.set(messageId, record);
 
-    console.log(
-      `${LOG_PREFIX} 🚨 PHÁT HIỆN GỠ TIN NHẮN NGẦM [${messageId}] (${record.senderName || record.source})! Nội dung gốc:`,
-      record.text || `[Media: ${record.attachments.join(', ')}]`
-    );
-
     emitToContentScript('FB_MSG_UNSENT', record);
   }
 
@@ -462,7 +427,6 @@
       if (typeof result === 'string' && result.length > 0 && result.length <= 2000) {
         const trimmed = result.trim();
         if (trimmed.length > 0) {
-          // Kiểm tra xem có phải thông báo thu hồi E2EE vừa được giải mã không
           if (isUnsendNoticeText(trimmed)) {
             if (Date.now() - PAGE_LOAD_TIME > INITIAL_SYNC_GRACE_MS && lastE2EEMessageId) {
               const targetId = lastE2EEMessageId;
@@ -477,13 +441,10 @@
             return result;
           }
 
-          // Nếu là chuỗi văn bản người dùng hợp lệ (không phải chuỗi kỹ thuật/JSON)
           if (!isTechnicalString(trimmed)) {
             const stack = new Error().stack || '';
-            // Chữ ký đặc trưng của hàm giải mã MAWVault E2EE trên Facebook: Array.reduce -> p -> y -> TextDecoder.decode
             if (stack.includes('Array.reduce')) {
               const now = Date.now();
-              // Trong 6 giây đầu khi mới tải trang, ghi nhận vào danh sách đã biết để không báo nhầm tin nhắn cũ trên khung chat
               if (now - PAGE_LOAD_TIME <= INITIAL_SYNC_GRACE_MS) {
                 if (!seenE2EETexts.has(trimmed)) {
                   seenE2EETexts.set(trimmed, `e2ee_init_${seenE2EETexts.size}`);
@@ -506,7 +467,6 @@
                   });
                 });
               } else {
-                // Cập nhật lại ID tin nhắn E2EE gần nhất vừa được truy xuất
                 const existingId = seenE2EETexts.get(trimmed);
                 if (existingId && capturedMessages.has(existingId)) {
                   lastE2EEMessageId = existingId;
@@ -527,7 +487,6 @@
     if (!args) return;
     if (/InsertNewMessageRange/i.test(moduleName)) return;
 
-    // A0. Bắt tên người dùng từ bảng danh bạ Lightspeed (LSVerifyContactRowExists / LSUpdateOrInsertContact)
     if (/^(LSVerifyContactRowExists|LSUpdateOrInsertContact|LSUpsertContact)(\.|$)/i.test(moduleName)) {
       const contactId = parseLSInt64(args[0]);
       if (contactId && contactId !== '0') {
@@ -549,7 +508,6 @@
       return;
     }
 
-    // A1. Bắt tên nhóm / cuộc trò chuyện từ bảng Thread Lightspeed (LSUpdateOrInsertThread / LSVerifyHybridThreadExists)
     if (/^(LSUpdateOrInsertThread|LSVerifyHybridThreadExists|LSUpsertThread)(\.|$)/i.test(moduleName)) {
       let threadId = '';
       let threadName = '';
@@ -579,18 +537,15 @@
       return;
     }
 
-    // A2. Xử lý chuyên biệt cấu trúc tham số của LSUpsertMessage & LSDeleteThenInsertMessage
     if (/^(LSUpsertMessage|LSDeleteThenInsertMessage)(\.|$)/i.test(moduleName) && args.length >= 18) {
       const rawText = typeof args[0] === 'string' ? unvaultString(args[0]) : undefined;
       const msgId = typeof args[8] === 'string' ? unvaultString(args[8]).trim() : '';
       const otid = typeof args[9] === 'string' ? unvaultString(args[9]).trim() : '';
       const isAdminMessage = args[12] === true;
 
-      // Bỏ qua thông báo hệ thống của nhóm (rời nhóm, vào nhóm, đổi tên...)
       if (isAdminMessage) return;
       if (!msgId) return;
 
-      // Quét toàn bộ các mảng Int64 [high32, low32] trong args[1..16] để tìm đúng timestamp 13 chữ số
       let validTimestamps = [];
       let validIds = [];
       for (let i = 1; i <= Math.min(16, args.length - 1); i++) {
@@ -608,15 +563,12 @@
       }
 
       const timestamp = validTimestamps.length > 0 ? Math.min(...validTimestamps) : null;
-      // Trong LSUpsertMessage/LSDeleteThenInsertMessage: args[3] là threadKey, args[10] là senderId
       const explicitThreadId = parseLSInt64(args[3]);
       const explicitSenderId = parseLSInt64(args[10]);
       const threadId = explicitThreadId || validIds[0] || '';
       const senderId = explicitSenderId || validIds[1] || validIds[0] || '';
 
       const resolvedId = resolveCanonicalMessageId(msgId);
-      // CHỈ coi là thu hồi khi rawText (args[0]) thực sự là chuỗi thông báo thu hồi/xóa tin nhắn
-      // (Tuyệt đối không dùng args[17]/args[18]/args[43] vì tin nhắn thường cũng bật các cờ này!)
       const isUnsent = Boolean(rawText && isUnsendNoticeText(rawText));
 
       if (isUnsent) {
@@ -629,7 +581,6 @@
         return;
       }
 
-      // Nếu là tin nhắn thường -> Bắt buộc phải có timestamp hợp lệ và KHÔNG phải tin nhắn cũ từ lịch sử
       if (!timestamp || isOldHistoricalTimestamp(timestamp)) return;
 
       if (rawText && !isTechnicalString(rawText)) {
@@ -647,7 +598,6 @@
       return;
     }
 
-    // B. Quét cho các module khác (LSInsertMessage, LSDeleteMessage, MAWThreadSnippetFor*Msg...)
     let msgIds = [];
     let altIds = [];
     let texts = [];
@@ -727,7 +677,6 @@
       const resolvedId = resolveCanonicalMessageId(primaryId);
       const bestTimestamp = timestamps.length > 0 ? Math.min(...timestamps) : null;
 
-      // Lưu ý: Không đưa DeleteThenInsertMessage vào đây vì đó là hàm cập nhật tin nhắn thường
       const isUnsendProcedure =
         /^(LSMarkMessageUnsent|LSHandleUnsendMessage|LSDeleteMessage|LSDeleteMessageRequest)(\.|$)/i.test(
           moduleName
@@ -952,7 +901,6 @@
         }
       }
 
-      // Lưu tên người dùng hoặc tên nhóm nếu đây là lệnh verifyContactRowExists / updateOrInsertThread
       if (
         /verifyContactRowExists|updateOrInsertContact/i.test(currentFunc) &&
         directI64Values.length > 0 &&
@@ -1006,7 +954,6 @@
         const threadId = ids[0] || '';
         const senderId = ids[1] || ids[0] || '';
 
-        // TUYỆT ĐỐI KHÔNG đưa deleteThenInsertMessage vào đây vì đó là hàm upsert tin nhắn thường trên Lightspeed!
         const isExplicitUnsendFunc =
           /^(markMessageUnsent|handleUnsendMessage|deleteMessage|retractMessage|recallMessage)$/i.test(
             currentFunc
@@ -1375,7 +1322,6 @@
       }
     }
 
-    // Quét đệ quy các trường con trong memoizedProps để tìm chuỗi mid.$ / otid.
     const keys = Object.keys(props);
     for (let i = 0; i < Math.min(keys.length, 25); i++) {
       const k = keys[i];
