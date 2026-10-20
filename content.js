@@ -1683,6 +1683,32 @@
     return roundedCandidate || noticeEl.parentElement || noticeEl;
   }
 
+  // Icon SVG dựng bằng DOM (không dùng url()/data: trong CSS để khỏi vướng CSP của Facebook)
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const ICON_PATHS = {
+    unsend: [
+      'M20 11.5c0 4.1-3.6 7.5-8 7.5-1 0-1.9-.2-2.8-.5L4 20l1.3-3.9A7.2 7.2 0 0 1 4 11.5C4 7.4 7.6 4 12 4s8 3.4 8 7.5z',
+      'M10.2 8.8 8 11l2.2 2.2',
+      'M8.2 11h4.8a2.3 2.3 0 0 1 0 4.6h-1.2'
+    ],
+    close: ['M6 6l12 12', 'M18 6 6 18'],
+    download: ['M12 4v11', 'm7 10 5 5 5-5', 'M5 20h14']
+  };
+  const TOAST_LIFETIME_MS = 6500;
+
+  function createIcon(paths) {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('class', 'fb-unsend-icon');
+    svg.setAttribute('aria-hidden', 'true');
+    paths.forEach((d) => {
+      const path = document.createElementNS(SVG_NS, 'path');
+      path.setAttribute('d', d);
+      svg.appendChild(path);
+    });
+    return svg;
+  }
+
   function openImageLightbox(url) {
     if (!url || !document.body) return;
     const existing = document.getElementById('fb-unsend-lightbox-overlay');
@@ -1690,6 +1716,18 @@
 
     const overlay = document.createElement('div');
     overlay.id = 'fb-unsend-lightbox-overlay';
+
+    function onKeyDown(e) {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeLightbox();
+    }
+
+    function closeLightbox() {
+      overlay.remove();
+      document.removeEventListener('keydown', onKeyDown, true);
+    }
 
     const modal = document.createElement('div');
     modal.className = 'fb-unsend-lightbox-modal';
@@ -1700,14 +1738,12 @@
     img.className = 'fb-unsend-lightbox-img';
     img.alt = 'Ảnh tin nhắn đã khôi phục';
 
-    const toolbar = document.createElement('div');
-    toolbar.className = 'fb-unsend-lightbox-toolbar';
-
     const downloadBtn = document.createElement('a');
     downloadBtn.href = url;
     downloadBtn.download = `fb-unsent-image-${Date.now()}.webp`;
-    downloadBtn.className = 'fb-unsend-lightbox-btn fb-unsend-lightbox-download';
-    downloadBtn.textContent = '⬇ Tải ảnh về máy';
+    downloadBtn.className = 'fb-unsend-lightbox-download';
+    downloadBtn.appendChild(createIcon(ICON_PATHS.download));
+    downloadBtn.appendChild(document.createTextNode('Tải ảnh về máy'));
     if (!url.startsWith('data:')) {
       downloadBtn.target = '_blank';
       downloadBtn.rel = 'noopener noreferrer';
@@ -1715,17 +1751,22 @@
 
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
-    closeBtn.className = 'fb-unsend-lightbox-btn fb-unsend-lightbox-close';
-    closeBtn.textContent = '✕ Đóng';
-    closeBtn.addEventListener('click', () => overlay.remove());
+    closeBtn.className = 'fb-unsend-lightbox-close';
+    closeBtn.title = 'Đóng (Esc)';
+    closeBtn.setAttribute('aria-label', 'Đóng');
+    closeBtn.appendChild(createIcon(ICON_PATHS.close));
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeLightbox();
+    });
 
-    toolbar.appendChild(downloadBtn);
-    toolbar.appendChild(closeBtn);
     modal.appendChild(img);
-    modal.appendChild(toolbar);
+    modal.appendChild(downloadBtn);
+    overlay.appendChild(closeBtn);
     overlay.appendChild(modal);
 
-    overlay.addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', closeLightbox);
+    document.addEventListener('keydown', onKeyDown, true);
     document.body.appendChild(overlay);
   }
 
@@ -1783,35 +1824,73 @@
     }
 
     const toast = document.createElement('div');
-    toast.className = 'fb-unsend-toast';
+    toast.className = `fb-unsend-toast${record.isSelf ? ' fb-unsend-toast-self' : ''}`;
+
+    // ── Đếm ngược tự đóng, tạm dừng khi rê chuột để kịp đọc ──
+    let remainingMs = TOAST_LIFETIME_MS;
+    let startedAt = Date.now();
+    let hideTimer = null;
+
+    function dismissToast() {
+      clearTimeout(hideTimer);
+      if (!toast.isConnected) return;
+      toast.classList.add('fb-unsend-toast-hide');
+      setTimeout(() => toast.remove(), 300);
+    }
+
+    toast.addEventListener('mouseenter', () => {
+      clearTimeout(hideTimer);
+      remainingMs -= Date.now() - startedAt;
+    });
+    toast.addEventListener('mouseleave', () => {
+      startedAt = Date.now();
+      hideTimer = setTimeout(dismissToast, Math.max(800, remainingMs));
+    });
 
     const header = document.createElement('div');
     header.className = 'fb-unsend-toast-header';
 
+    const iconTile = document.createElement('div');
+    iconTile.className = 'fb-unsend-toast-icon';
+    iconTile.appendChild(createIcon(ICON_PATHS.unsend));
+
+    const heading = document.createElement('div');
+    heading.className = 'fb-unsend-toast-heading';
+
     const title = document.createElement('div');
     title.className = 'fb-unsend-toast-title';
-    title.textContent = `🚨 Phát hiện gỡ tin nhắn • ${record.senderName || 'Facebook'}`;
+    title.textContent = record.isSelf ? 'Bạn vừa gỡ một tin nhắn' : 'Vừa có tin nhắn bị gỡ';
+
+    const sender = document.createElement('div');
+    sender.className = 'fb-unsend-toast-sender';
+    sender.textContent = record.senderName || 'Facebook';
+    sender.title = record.senderName || 'Facebook';
+
+    heading.appendChild(title);
+    heading.appendChild(sender);
 
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'fb-unsend-toast-close';
-    closeBtn.textContent = '×';
     closeBtn.title = 'Đóng thông báo';
-    closeBtn.addEventListener('click', () => {
-      toast.classList.add('fb-unsend-toast-hide');
-      setTimeout(() => toast.remove(), 300);
-    });
+    closeBtn.setAttribute('aria-label', 'Đóng thông báo');
+    closeBtn.appendChild(createIcon(ICON_PATHS.close));
+    closeBtn.addEventListener('click', dismissToast);
 
-    header.appendChild(title);
+    header.appendChild(iconTile);
+    header.appendChild(heading);
     header.appendChild(closeBtn);
 
     const body = document.createElement('div');
     body.className = 'fb-unsend-toast-body';
-    body.textContent =
-      record.text ||
-      (record.attachments?.length
-        ? `📷 Đính kèm ${record.attachments.length} hình ảnh / nhãn dán`
-        : '(Không rõ nội dung)');
+    if (record.text) {
+      body.textContent = record.text;
+    } else {
+      body.classList.add('fb-unsend-toast-body-muted');
+      body.textContent = record.attachments?.length
+        ? `Đính kèm ${record.attachments.length} hình ảnh / nhãn dán`
+        : 'Không rõ nội dung';
+    }
 
     toast.appendChild(header);
     toast.appendChild(body);
@@ -1831,13 +1910,13 @@
       toast.appendChild(thumbWrap);
     }
 
-    toastContainer.appendChild(toast);
+    const progress = document.createElement('div');
+    progress.className = 'fb-unsend-toast-progress';
+    progress.style.animationDuration = `${TOAST_LIFETIME_MS}ms`;
+    toast.appendChild(progress);
 
-    setTimeout(() => {
-      if (!toast.isConnected) return;
-      toast.classList.add('fb-unsend-toast-hide');
-      setTimeout(() => toast.remove(), 350);
-    }, 6500);
+    toastContainer.appendChild(toast);
+    hideTimer = setTimeout(dismissToast, TOAST_LIFETIME_MS);
   }
 
   // ============================================================================

@@ -1,48 +1,74 @@
 // popup.js - Quản lý giao diện lịch sử tin nhắn thu hồi, bộ lọc, Xuất/Nhập Backup (JSON) và Lightbox
 
+// ===== Hằng số =====
 const STORAGE_KEY_MESSAGES = 'fb_captured_messages_v2';
 const STORAGE_KEY_UNSENT = 'fb_unsent_messages_v2';
 const STORAGE_KEY_CLEANED_FLAG = 'fb_unsend_schema_v4_cleaned';
 
-const unsentListEl = document.getElementById('unsent-list');
-const statTotalEl = document.getElementById('stat-total');
-const statOthersEl = document.getElementById('stat-others');
-const statMediaEl = document.getElementById('stat-media');
-const statCachedEl = document.getElementById('stat-cached');
-
-const searchInputEl = document.getElementById('search-input');
-const clearSearchBtnEl = document.getElementById('clear-search-btn');
-const threadFilterEl = document.getElementById('thread-filter');
-const filterTabsEl = document.getElementById('filter-tabs');
-
-const exportBtnEl = document.getElementById('export-btn');
-const importBtnEl = document.getElementById('import-btn');
-const importFileInputEl = document.getElementById('import-file-input');
-const clearAllBtnEl = document.getElementById('clear-all-btn');
-const statusBannerEl = document.getElementById('status-banner');
-
-const lightboxModalEl = document.getElementById('lightbox-modal');
-const lightboxImgEl = document.getElementById('lightbox-img');
-const lightboxDownloadEl = document.getElementById('lightbox-download');
-const lightboxCloseEl = document.getElementById('lightbox-close');
-
-let allUnsentMessages = [];
-let allCapturedMessages = [];
-let activeTabFilter = 'all'; // 'all' | 'others' | 'self' | 'media'
-let activeThreadFilter = 'ALL';
-let clearConfirmTimeout = null;
-let bannerTimeout = null;
+const CLEAR_CONFIRM_MS = 3000;
+const STATUS_HIDE_MS = 3600;
+const COPY_FEEDBACK_MS = 1200;
+const CARD_REMOVE_ANIM_MS = 180;
 
 const AVATAR_GRADIENTS = [
-  'linear-gradient(135deg, #f43f5e, #e11d48)',
-  'linear-gradient(135deg, #8b5cf6, #6d28d9)',
-  'linear-gradient(135deg, #0ea5e9, #0284c7)',
-  'linear-gradient(135deg, #10b981, #059669)',
-  'linear-gradient(135deg, #f59e0b, #d97706)',
-  'linear-gradient(135deg, #ec4899, #be185d)',
-  'linear-gradient(135deg, #6366f1, #4338ca)'
+  'linear-gradient(135deg, #fb7185, #e11d48)',
+  'linear-gradient(135deg, #a78bfa, #7c3aed)',
+  'linear-gradient(135deg, #38bdf8, #0284c7)',
+  'linear-gradient(135deg, #34d399, #059669)',
+  'linear-gradient(135deg, #fbbf24, #d97706)',
+  'linear-gradient(135deg, #f472b6, #db2777)',
+  'linear-gradient(135deg, #2dd4bf, #0d9488)'
 ];
+const SELF_AVATAR_GRADIENT = 'linear-gradient(135deg, #3d7cff, #7b5cff)';
 
+const WEEKDAY_NAMES = ['Chủ nhật', 'Thứ hai', 'Thứ ba', 'Thứ tư', 'Thứ năm', 'Thứ sáu', 'Thứ bảy'];
+
+// ===== State =====
+const appState = {
+  unsentMessages: [],
+  capturedMessages: [],
+  tabFilter: 'all', // 'all' | 'others' | 'self' | 'media'
+  threadFilter: 'ALL',
+  clearConfirmTimer: null,
+  statusTimer: null
+};
+
+const dom = {};
+
+function cacheDom() {
+  dom.unsentList = document.getElementById('unsent-list');
+  dom.searchInput = document.getElementById('search-input');
+  dom.clearSearchBtn = document.getElementById('clear-search-btn');
+  dom.threadFilter = document.getElementById('thread-filter');
+  dom.filterTabs = document.getElementById('filter-tabs');
+  dom.tabButtons = dom.filterTabs.querySelectorAll('.tab-btn');
+  dom.tabCounts = dom.filterTabs.querySelectorAll('.tab-count');
+
+  dom.exportBtn = document.getElementById('export-btn');
+  dom.importBtn = document.getElementById('import-btn');
+  dom.importFileInput = document.getElementById('import-file-input');
+  dom.clearAllBtn = document.getElementById('clear-all-btn');
+
+  dom.footerInfo = document.getElementById('footer-info');
+  dom.versionTag = document.getElementById('version-tag');
+
+  dom.statusToast = document.getElementById('status-toast');
+  dom.statusIconUse = dom.statusToast.querySelector('.status-icon use');
+  dom.statusText = dom.statusToast.querySelector('.status-text');
+
+  dom.lightbox = document.getElementById('lightbox-modal');
+  dom.lightboxImg = document.getElementById('lightbox-img');
+  dom.lightboxDownload = document.getElementById('lightbox-download');
+  dom.lightboxClose = document.getElementById('lightbox-close');
+}
+
+function cloneTemplate(id) {
+  const template = document.getElementById(id);
+  if (!template) throw new Error('Missing template: ' + id);
+  return template.content.firstElementChild.cloneNode(true);
+}
+
+// ===== Chuẩn hóa tên người gửi / đoạn chat =====
 function isGenericName(name) {
   if (!name || typeof name !== 'string') return true;
   const trimmed = name.trim();
@@ -69,8 +95,8 @@ function parseRecordNames(item) {
   if (rawSender.includes('•')) {
     const parts = rawSender
       .split('•')
-      .map((s) => s.trim())
-      .filter((s) => s && !isGenericName(s));
+      .map(s => s.trim())
+      .filter(s => s && !isGenericName(s));
     if (!person && parts[0]) person = parts[0];
     if (!thread && parts[1]) thread = parts[1];
   } else if (!person && !isGenericName(rawSender)) {
@@ -85,6 +111,15 @@ function parseRecordNames(item) {
   return { person, thread, isSelf };
 }
 
+function getRecordAttachments(item) {
+  return Array.isArray(item.attachments) ? item.attachments.filter(Boolean) : [];
+}
+
+function getRecordTime(item) {
+  return item.unsentAt || item.timestamp || Date.now();
+}
+
+// ── Avatar ──
 function getAvatarGradient(name) {
   const str = String(name || 'F');
   let hash = 0;
@@ -104,73 +139,102 @@ function getInitials(name) {
   return clean.slice(0, 2).toUpperCase();
 }
 
+// ── Thời gian ──
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
 function formatExactTime(ts) {
   if (!ts) return '';
   try {
     const d = new Date(ts);
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} • ${pad(
-      d.getDate()
-    )}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
+    return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())} • ${pad2(d.getDate())}/${pad2(
+      d.getMonth() + 1
+    )}/${d.getFullYear()}`;
   } catch (_) {
     return '';
   }
 }
 
-function formatRelativeTime(ts) {
-  if (!ts) return 'Vừa xong';
+function getDayKey(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+function formatDayLabel(ts) {
+  const d = new Date(ts);
+  const today = new Date();
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+
+  if (getDayKey(ts) === getDayKey(today.getTime())) return 'Hôm nay';
+  if (getDayKey(ts) === getDayKey(yesterday.getTime())) return 'Hôm qua';
+  return `${WEEKDAY_NAMES[d.getDay()]}, ${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()}`;
+}
+
+// Hôm nay & dưới 1 giờ thì hiện "x phút trước", còn lại hiện giờ:phút (ngày đã có ở nhãn nhóm)
+function formatCardTime(ts) {
   const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
   if (diffSec < 45) return 'Vừa xong';
   const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin} phút trước`;
-  const diffHour = Math.floor(diffMin / 60);
-  if (diffHour < 24) return `${diffHour} giờ trước`;
-  const diffDay = Math.floor(diffHour / 24);
-  return `${diffDay} ngày trước`;
+  if (diffMin < 60 && getDayKey(ts) === getDayKey(Date.now())) return `${diffMin} phút trước`;
+  const d = new Date(ts);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
-function showStatusBanner(message, isError = false) {
-  if (!statusBannerEl) return;
-  if (bannerTimeout) clearTimeout(bannerTimeout);
-  statusBannerEl.textContent = message;
-  statusBannerEl.classList.toggle('error', Boolean(isError));
-  statusBannerEl.hidden = false;
-  bannerTimeout = setTimeout(() => {
-    statusBannerEl.hidden = true;
-  }, 4200);
+// ===== Thông báo nổi & Lightbox =====
+function showStatus(message, isError = false) {
+  if (appState.statusTimer) clearTimeout(appState.statusTimer);
+
+  dom.statusText.textContent = message;
+  dom.statusToast.classList.toggle('error', Boolean(isError));
+  dom.statusIconUse.setAttribute('href', isError ? '#i-alert' : '#i-check');
+
+  // Ẩn rồi hiện lại để animation chạy lại khi có thông báo mới liên tiếp
+  dom.statusToast.hidden = true;
+  void dom.statusToast.offsetWidth;
+  dom.statusToast.hidden = false;
+
+  appState.statusTimer = setTimeout(function () {
+    dom.statusToast.hidden = true;
+  }, STATUS_HIDE_MS);
+}
+
+function applyDownloadLink(linkEl, url) {
+  linkEl.href = url;
+  linkEl.download = `fb-unsent-${Date.now()}.webp`;
+  // Link ảnh ngoài (CDN Facebook) không tải được bằng thuộc tính download → mở tab mới thay vì điều hướng popup
+  if (!url.startsWith('data:')) {
+    linkEl.target = '_blank';
+    linkEl.rel = 'noopener noreferrer';
+  } else {
+    linkEl.removeAttribute('target');
+    linkEl.removeAttribute('rel');
+  }
 }
 
 function openLightbox(url) {
-  if (!url || !lightboxModalEl) return;
-  lightboxImgEl.src = url;
-  lightboxDownloadEl.href = url;
-  lightboxDownloadEl.download = `fb-unsent-${Date.now()}.webp`;
-  lightboxModalEl.hidden = false;
+  if (!url) return;
+  dom.lightboxImg.src = url;
+  applyDownloadLink(dom.lightboxDownload, url);
+  dom.lightbox.hidden = false;
 }
 
 function closeLightbox() {
-  if (!lightboxModalEl) return;
-  lightboxModalEl.hidden = true;
-  lightboxImgEl.src = '';
+  dom.lightbox.hidden = true;
+  dom.lightboxImg.src = '';
 }
 
-function updateStatsAndThreadOptions() {
-  const total = allUnsentMessages.length;
-  let othersCount = 0;
-  let mediaCount = 0;
-
+// ===== Thống kê & danh sách đoạn chat =====
+function updateThreadOptions() {
   const threadGroups = [];
 
-  allUnsentMessages.forEach((item) => {
-    const { thread, isSelf } = parseRecordNames(item);
-    if (!isSelf) othersCount++;
-    if (Array.isArray(item.attachments) && item.attachments.length > 0) mediaCount++;
-
+  appState.unsentMessages.forEach(item => {
+    const { thread } = parseRecordNames(item);
     const norm = normalizeThreadKey(thread).toLowerCase();
     if (!norm) return;
 
     const existingGroup = threadGroups.find(
-      (g) => g.key === norm || (g.key.length >= 4 && norm.length >= 4 && (g.key.includes(norm) || norm.includes(g.key)))
+      g => g.key === norm || (g.key.length >= 4 && norm.length >= 4 && (g.key.includes(norm) || norm.includes(g.key)))
     );
     if (existingGroup) {
       existingGroup.count++;
@@ -187,34 +251,40 @@ function updateStatsAndThreadOptions() {
     }
   });
 
-  statTotalEl.textContent = String(total);
-  statOthersEl.textContent = String(othersCount);
-  statMediaEl.textContent = String(mediaCount);
-  statCachedEl.textContent = String(allCapturedMessages.length);
-
-  const previousValue = threadFilterEl.value;
-  threadFilterEl.innerHTML = '';
-
-  const allOpt = document.createElement('option');
-  allOpt.value = 'ALL';
-  allOpt.textContent = `Tất cả cuộc trò chuyện (${total})`;
-  threadFilterEl.appendChild(allOpt);
-
-  threadGroups.forEach((g) => {
-    const opt = document.createElement('option');
-    opt.value = g.key;
-    opt.textContent = `${g.label} (${g.count})`;
-    threadFilterEl.appendChild(opt);
+  const previousValue = dom.threadFilter.value;
+  dom.threadFilter.replaceChildren();
+  dom.threadFilter.appendChild(new Option('Mọi đoạn chat', 'ALL'));
+  threadGroups.forEach(g => {
+    dom.threadFilter.appendChild(new Option(`${g.label} (${g.count})`, g.key));
   });
 
-  if (threadGroups.some((g) => g.key === previousValue)) {
-    threadFilterEl.value = previousValue;
+  if (threadGroups.some(g => g.key === previousValue)) {
+    dom.threadFilter.value = previousValue;
   } else {
-    threadFilterEl.value = 'ALL';
-    activeThreadFilter = 'ALL';
+    dom.threadFilter.value = 'ALL';
+    appState.threadFilter = 'ALL';
   }
+
+  dom.footerInfo.textContent = `Lưu tạm ${appState.capturedMessages.length.toLocaleString('vi-VN')} tin để đối chiếu`;
 }
 
+// Số đếm trên tab tính theo đoạn chat + từ khóa đang chọn
+function updateTabCounts(baseItems) {
+  const counts = { all: baseItems.length, others: 0, self: 0, media: 0 };
+  baseItems.forEach(item => {
+    if (parseRecordNames(item).isSelf) counts.self++;
+    else counts.others++;
+    if (getRecordAttachments(item).length > 0) counts.media++;
+  });
+
+  dom.tabCounts.forEach(el => {
+    const value = counts[el.dataset.count] || 0;
+    el.textContent = String(value);
+    el.classList.toggle('is-zero', value === 0);
+  });
+}
+
+// ===== Lọc =====
 function matchesSelectedThread(item, selectedKey) {
   if (!selectedKey || selectedKey === 'ALL') return true;
   const { thread, person } = parseRecordNames(item);
@@ -229,219 +299,188 @@ function matchesSelectedThread(item, selectedKey) {
   return false;
 }
 
-function renderList() {
-  const kw = (searchInputEl.value || '').trim().toLowerCase();
-  clearSearchBtnEl.hidden = !kw;
+function matchesKeyword(item, keyword) {
+  if (!keyword) return true;
+  const { person, thread } = parseRecordNames(item);
+  const hay = `${person} ${thread} ${item.senderName || ''} ${item.text || ''}`.toLowerCase();
+  return hay.includes(keyword);
+}
 
-  const filtered = allUnsentMessages.filter((item) => {
-    const { person, thread, isSelf } = parseRecordNames(item);
-    const hasMedia = Array.isArray(item.attachments) && item.attachments.length > 0;
+function matchesTabFilter(item, tabFilter) {
+  const { isSelf } = parseRecordNames(item);
+  if (tabFilter === 'others') return !isSelf;
+  if (tabFilter === 'self') return isSelf;
+  if (tabFilter === 'media') return getRecordAttachments(item).length > 0;
+  return true;
+}
 
-    if (activeTabFilter === 'others' && isSelf) return false;
-    if (activeTabFilter === 'self' && !isSelf) return false;
-    if (activeTabFilter === 'media' && !hasMedia) return false;
+// ===== Render =====
+function buildEmptyState(isFiltering) {
+  const empty = cloneTemplate('emptyStateTemplate');
+  empty.querySelector('.empty-icon use').setAttribute('href', isFiltering ? '#i-search' : '#i-inbox');
+  empty.querySelector('.empty-title').textContent = isFiltering
+    ? 'Không tìm thấy tin nhắn phù hợp'
+    : 'Chưa có tin nhắn nào bị gỡ';
+  empty.querySelector('.empty-desc').textContent = isFiltering
+    ? 'Thử đổi từ khóa hoặc chọn lại bộ lọc đoạn chat.'
+    : 'Tin nhắn văn bản và hình ảnh bị thu hồi trên Facebook & Messenger sẽ tự động hiện ở đây.';
+  return empty;
+}
 
-    if (!matchesSelectedThread(item, activeThreadFilter)) return false;
+function buildMediaThumb(url) {
+  const thumb = cloneTemplate('mediaThumbTemplate');
+  const img = thumb.querySelector('img');
+  img.src = url;
+  img.addEventListener('error', function () {
+    thumb.remove();
+  });
+  thumb.addEventListener('click', function () {
+    openLightbox(url);
+  });
+  return thumb;
+}
 
-    if (kw) {
-      const hay = `${person} ${thread} ${item.senderName || ''} ${item.text || ''}`.toLowerCase();
-      if (!hay.includes(kw)) return false;
-    }
+function buildMessageCard(item, ts) {
+  const { person, thread, isSelf } = parseRecordNames(item);
+  const attachments = getRecordAttachments(item);
+  const card = cloneTemplate('messageCardTemplate');
+  card.classList.toggle('is-self', isSelf);
 
-    return true;
+  // ── Người gửi ──
+  const avatar = card.querySelector('.msg-avatar');
+  avatar.style.background = isSelf ? SELF_AVATAR_GRADIENT : getAvatarGradient(person);
+  avatar.textContent = isSelf ? 'Bạn' : getInitials(person);
+
+  const nameEl = card.querySelector('.msg-name');
+  nameEl.textContent = person;
+  nameEl.title = person;
+
+  // Chỉ gắn nhãn khi chính bạn gỡ; tin người khác gỡ là trường hợp mặc định nên không cần nhãn
+  if (isSelf) {
+    const roleEl = card.querySelector('.msg-role');
+    roleEl.classList.add('self');
+    roleEl.textContent = 'Bạn gỡ';
+    roleEl.hidden = false;
+  }
+
+  const timeEl = card.querySelector('.msg-time');
+  timeEl.textContent = formatCardTime(ts);
+  timeEl.title = `Gỡ lúc ${formatExactTime(ts)}`;
+  timeEl.dateTime = new Date(ts).toISOString();
+
+  if (thread && thread.toLowerCase() !== person.toLowerCase()) {
+    const threadEl = card.querySelector('.msg-thread');
+    threadEl.querySelector('.msg-thread-name').textContent = thread;
+    threadEl.title = thread;
+    threadEl.hidden = false;
+  }
+
+  // ── Nội dung ──
+  if (item.anchorAboveText) {
+    const anchorEl = card.querySelector('.msg-anchor');
+    anchorEl.querySelector('.msg-anchor-text').textContent = `Sau tin: "${item.anchorAboveText}"`;
+    anchorEl.title = `Nằm ngay bên dưới tin nhắn: "${item.anchorAboveText}"`;
+    anchorEl.hidden = false;
+  }
+
+  if (item.text) {
+    const bubbleEl = card.querySelector('.msg-bubble');
+    bubbleEl.textContent = item.text;
+    bubbleEl.hidden = false;
+  }
+
+  if (attachments.length > 0) {
+    const mediaEl = card.querySelector('.msg-media');
+    attachments.forEach(url => mediaEl.appendChild(buildMediaThumb(url)));
+    mediaEl.hidden = false;
+  }
+
+  // ── Thao tác ──
+  const copyBtn = card.querySelector('[data-action="copy"]');
+  if (item.text) {
+    copyBtn.hidden = false;
+    copyBtn.addEventListener('click', function () {
+      navigator.clipboard.writeText(item.text).then(function () {
+        const iconUse = copyBtn.querySelector('use');
+        iconUse.setAttribute('href', '#i-check');
+        copyBtn.classList.add('done');
+        showStatus('Đã sao chép nội dung tin nhắn');
+        setTimeout(function () {
+          iconUse.setAttribute('href', '#i-copy');
+          copyBtn.classList.remove('done');
+        }, COPY_FEEDBACK_MS);
+      });
+    });
+  }
+
+  if (attachments.length > 0) {
+    const downloadBtn = card.querySelector('[data-action="download"]');
+    applyDownloadLink(downloadBtn, attachments[0]);
+    downloadBtn.hidden = false;
+  }
+
+  card.querySelector('[data-action="delete"]').addEventListener('click', function () {
+    card.classList.add('removing');
+    setTimeout(function () {
+      removeUnsentMessage(item.messageId);
+    }, CARD_REMOVE_ANIM_MS);
   });
 
-  unsentListEl.innerHTML = '';
+  return card;
+}
 
-  if (filtered.length === 0) {
-    const emptyDiv = document.createElement('div');
-    emptyDiv.className = 'empty-state';
+function renderList() {
+  const keyword = (dom.searchInput.value || '').trim().toLowerCase();
+  dom.clearSearchBtn.hidden = !keyword;
 
-    const icon = document.createElement('div');
-    icon.className = 'empty-icon';
-    icon.textContent = kw || activeTabFilter !== 'all' || activeThreadFilter !== 'ALL' ? '🔍' : '📭';
+  const baseItems = appState.unsentMessages.filter(
+    item => matchesSelectedThread(item, appState.threadFilter) && matchesKeyword(item, keyword)
+  );
+  updateTabCounts(baseItems);
 
-    const title = document.createElement('div');
-    title.className = 'empty-title';
-    title.textContent =
-      kw || activeTabFilter !== 'all' || activeThreadFilter !== 'ALL'
-        ? 'Không tìm thấy tin nhắn phù hợp'
-        : 'Chưa có tin nhắn nào bị gỡ';
+  const visibleItems = baseItems
+    .filter(item => matchesTabFilter(item, appState.tabFilter))
+    .sort((a, b) => getRecordTime(b) - getRecordTime(a));
 
-    const desc = document.createElement('div');
-    desc.className = 'empty-desc';
-    desc.textContent =
-      kw || activeTabFilter !== 'all' || activeThreadFilter !== 'ALL'
-        ? 'Hãy thử đổi từ khóa tìm kiếm hoặc chọn lại bộ lọc cuộc trò chuyện.'
-        : 'Mọi tin nhắn văn bản và hình ảnh bị thu hồi trên Facebook & Messenger sẽ tự động hiển thị tại đây.';
+  dom.unsentList.replaceChildren();
 
-    emptyDiv.appendChild(icon);
-    emptyDiv.appendChild(title);
-    emptyDiv.appendChild(desc);
-    unsentListEl.appendChild(emptyDiv);
+  if (visibleItems.length === 0) {
+    const isFiltering = Boolean(keyword) || appState.tabFilter !== 'all' || appState.threadFilter !== 'ALL';
+    dom.unsentList.appendChild(buildEmptyState(isFiltering));
     return;
   }
 
-  filtered.forEach((item) => {
-    const { person, thread, isSelf } = parseRecordNames(item);
-    const cleanAttachments = Array.isArray(item.attachments) ? item.attachments.filter(Boolean) : [];
-    const ts = item.unsentAt || item.timestamp || Date.now();
-
-    const card = document.createElement('div');
-    card.className = `unsent-card${isSelf ? ' self-card' : ''}`;
-
-    const top = document.createElement('div');
-    top.className = 'card-top';
-
-    const senderGroup = document.createElement('div');
-    senderGroup.className = 'sender-group';
-
-    const avatar = document.createElement('div');
-    avatar.className = 'sender-avatar';
-    avatar.style.background = isSelf
-      ? 'linear-gradient(135deg, #6366f1, #4f46e5)'
-      : getAvatarGradient(person);
-    avatar.textContent = getInitials(person);
-
-    const senderMeta = document.createElement('div');
-    senderMeta.className = 'sender-meta';
-
-    const nameRow = document.createElement('div');
-    nameRow.className = 'sender-name-row';
-
-    const personSpan = document.createElement('span');
-    personSpan.className = 'person-name';
-    personSpan.textContent = person;
-    personSpan.title = person;
-
-    const rolePill = document.createElement('span');
-    rolePill.className = `role-pill ${isSelf ? 'self' : 'other'}`;
-    rolePill.textContent = isSelf ? 'Bạn gỡ' : 'Người khác';
-
-    nameRow.appendChild(personSpan);
-    nameRow.appendChild(rolePill);
-    senderMeta.appendChild(nameRow);
-
-    if (thread && thread.toLowerCase() !== person.toLowerCase()) {
-      const threadBadge = document.createElement('div');
-      threadBadge.className = 'thread-badge';
-      threadBadge.textContent = `💬 ${thread}`;
-      threadBadge.title = thread;
-      senderMeta.appendChild(threadBadge);
+  const fragment = document.createDocumentFragment();
+  let lastDayKey = '';
+  visibleItems.forEach(item => {
+    const ts = getRecordTime(item);
+    const dayKey = getDayKey(ts);
+    if (dayKey !== lastDayKey) {
+      const dayLabel = cloneTemplate('dayLabelTemplate');
+      dayLabel.textContent = formatDayLabel(ts);
+      fragment.appendChild(dayLabel);
+      lastDayKey = dayKey;
     }
-
-    senderGroup.appendChild(avatar);
-    senderGroup.appendChild(senderMeta);
-
-    const timeGroup = document.createElement('div');
-    timeGroup.className = 'time-group';
-
-    const relTime = document.createElement('span');
-    relTime.className = 'relative-time';
-    relTime.textContent = formatRelativeTime(ts);
-
-    const exTime = document.createElement('span');
-    exTime.className = 'exact-time';
-    exTime.textContent = formatExactTime(ts);
-
-    timeGroup.appendChild(relTime);
-    timeGroup.appendChild(exTime);
-
-    top.appendChild(senderGroup);
-    top.appendChild(timeGroup);
-    card.appendChild(top);
-
-    if (item.text) {
-      const bodyDiv = document.createElement('div');
-      bodyDiv.className = 'card-body';
-      bodyDiv.textContent = item.text;
-      card.appendChild(bodyDiv);
-    }
-
-    if (cleanAttachments.length > 0) {
-      const mediaDiv = document.createElement('div');
-      mediaDiv.className = 'card-media';
-      cleanAttachments.forEach((url) => {
-        const wrap = document.createElement('div');
-        wrap.className = 'media-item-wrap';
-
-        const img = document.createElement('img');
-        img.src = url;
-        img.alt = 'Ảnh đính kèm';
-        img.title = 'Nhấn để phóng to hoặc tải ảnh về máy';
-        img.addEventListener('click', () => openLightbox(url));
-        img.addEventListener('error', () => wrap.remove());
-
-        wrap.appendChild(img);
-        mediaDiv.appendChild(wrap);
-      });
-      card.appendChild(mediaDiv);
-    }
-
-    const footer = document.createElement('div');
-    footer.className = 'card-footer';
-
-    if (item.anchorAboveText) {
-      const anchorSpan = document.createElement('span');
-      anchorSpan.className = 'anchor-hint';
-      anchorSpan.textContent = `↳ Sau tin: "${item.anchorAboveText}"`;
-      anchorSpan.title = `Nằm ngay bên dưới tin nhắn: "${item.anchorAboveText}"`;
-      footer.appendChild(anchorSpan);
-    }
-
-    const actionsDiv = document.createElement('div');
-    actionsDiv.className = 'card-actions';
-
-    if (item.text) {
-      const copyBtn = document.createElement('button');
-      copyBtn.type = 'button';
-      copyBtn.className = 'action-btn';
-      copyBtn.textContent = '📋 Sao chép';
-      copyBtn.addEventListener('click', () => {
-        navigator.clipboard.writeText(item.text).then(() => {
-          copyBtn.textContent = '✅ Đã chép';
-          setTimeout(() => {
-            copyBtn.textContent = '📋 Sao chép';
-          }, 1200);
-        });
-      });
-      actionsDiv.appendChild(copyBtn);
-    }
-
-    if (cleanAttachments.length > 0) {
-      const dlBtn = document.createElement('a');
-      dlBtn.href = cleanAttachments[0];
-      dlBtn.download = `fb-unsent-${Date.now()}.webp`;
-      dlBtn.className = 'action-btn';
-      dlBtn.textContent = '⬇ Tải ảnh';
-      actionsDiv.appendChild(dlBtn);
-    }
-
-    const delBtn = document.createElement('button');
-    delBtn.type = 'button';
-    delBtn.className = 'action-btn delete';
-    delBtn.textContent = '🗑 Xóa';
-    delBtn.addEventListener('click', () => {
-      allUnsentMessages = allUnsentMessages.filter((m) => m.messageId !== item.messageId);
-      chrome.storage.local.set({ [STORAGE_KEY_UNSENT]: allUnsentMessages }, () => {
-        updateStatsAndThreadOptions();
-        renderList();
-      });
-    });
-    actionsDiv.appendChild(delBtn);
-
-    footer.appendChild(actionsDiv);
-    card.appendChild(footer);
-    unsentListEl.appendChild(card);
+    fragment.appendChild(buildMessageCard(item, ts));
   });
+  dom.unsentList.appendChild(fragment);
+}
+
+function refreshView() {
+  updateThreadOptions();
+  renderList();
+}
+
+function removeUnsentMessage(messageId) {
+  appState.unsentMessages = appState.unsentMessages.filter(m => m.messageId !== messageId);
+  chrome.storage.local.set({ [STORAGE_KEY_UNSENT]: appState.unsentMessages }, refreshView);
 }
 
 function loadPopupData() {
-  chrome.storage.local.get([STORAGE_KEY_UNSENT, STORAGE_KEY_MESSAGES], (res) => {
-    allUnsentMessages = Array.isArray(res[STORAGE_KEY_UNSENT]) ? res[STORAGE_KEY_UNSENT] : [];
-    allCapturedMessages = Array.isArray(res[STORAGE_KEY_MESSAGES]) ? res[STORAGE_KEY_MESSAGES] : [];
-    updateStatsAndThreadOptions();
-    renderList();
+  chrome.storage.local.get([STORAGE_KEY_UNSENT, STORAGE_KEY_MESSAGES], function (res) {
+    appState.unsentMessages = Array.isArray(res[STORAGE_KEY_UNSENT]) ? res[STORAGE_KEY_UNSENT] : [];
+    appState.capturedMessages = Array.isArray(res[STORAGE_KEY_MESSAGES]) ? res[STORAGE_KEY_MESSAGES] : [];
+    refreshView();
   });
 
   chrome.runtime.sendMessage({ type: 'CLEAR_UNREAD_BADGE' });
@@ -452,20 +491,19 @@ function loadPopupData() {
 // ============================================================================
 
 function exportBackupJson() {
-  chrome.storage.local.get([STORAGE_KEY_UNSENT, STORAGE_KEY_MESSAGES], (res) => {
+  chrome.storage.local.get([STORAGE_KEY_UNSENT, STORAGE_KEY_MESSAGES], function (res) {
     const unsent = Array.isArray(res[STORAGE_KEY_UNSENT]) ? res[STORAGE_KEY_UNSENT] : [];
     const captured = Array.isArray(res[STORAGE_KEY_MESSAGES]) ? res[STORAGE_KEY_MESSAGES] : [];
 
     if (unsent.length === 0 && captured.length === 0) {
-      showStatusBanner('⚠️ Chưa có dữ liệu tin nhắn nào để xuất sao lưu!', true);
+      showStatus('Chưa có dữ liệu tin nhắn nào để xuất', true);
       return;
     }
 
     const now = new Date();
-    const pad = (n) => String(n).padStart(2, '0');
-    const fileStamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(
+    const fileStamp = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}_${pad2(
       now.getHours()
-    )}-${pad(now.getMinutes())}`;
+    )}-${pad2(now.getMinutes())}`;
 
     const backupPayload = {
       app: 'FB Unsend Message Viewer',
@@ -487,9 +525,11 @@ function exportBackupJson() {
     document.body.appendChild(a);
     a.click();
     a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    setTimeout(function () {
+      URL.revokeObjectURL(url);
+    }, 1500);
 
-    showStatusBanner(`✅ Đã xuất ${unsent.length} tin bị gỡ & ${captured.length} tin lưu tạm!`);
+    showStatus(`Đã xuất ${unsent.length} tin bị gỡ & ${captured.length} tin lưu tạm`);
   });
 }
 
@@ -511,7 +551,7 @@ function smartMergeRecords(existingList, importedList, isUnsentCollection = true
     const itemIsSelf = Boolean(rawItem.isSelf);
     const itemTime = rawItem.unsentAt || rawItem.timestamp || Date.now();
 
-    const dupIdx = result.findIndex((ex) => {
+    const dupIdx = result.findIndex(ex => {
       if (!ex) return false;
       if (ex.messageId && rawItem.messageId && ex.messageId === rawItem.messageId) return true;
 
@@ -538,9 +578,7 @@ function smartMergeRecords(existingList, importedList, isUnsentCollection = true
           ? ex.messageId
           : ex.messageId || rawItem.messageId;
 
-      const mergedAttachments = Array.from(
-        new Set([...(ex.attachments || []), ...attachments])
-      );
+      const mergedAttachments = Array.from(new Set([...(ex.attachments || []), ...attachments]));
 
       const exThread = normalizeThreadKey(ex.threadName);
       const impThread = normalizeThreadKey(rawItem.threadName);
@@ -587,7 +625,7 @@ function smartMergeRecords(existingList, importedList, isUnsentCollection = true
 function handleImportFile(file) {
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = (e) => {
+  reader.onload = function (e) {
     try {
       const parsed = JSON.parse(String(e.target?.result || ''));
       let importedUnsent = [];
@@ -609,11 +647,11 @@ function handleImportFile(file) {
       }
 
       if (importedUnsent.length === 0 && importedCaptured.length === 0) {
-        showStatusBanner('⚠️ Tệp JSON không chứa dữ liệu tin nhắn hợp lệ!', true);
+        showStatus('Tệp JSON không chứa dữ liệu tin nhắn hợp lệ', true);
         return;
       }
 
-      chrome.storage.local.get([STORAGE_KEY_UNSENT, STORAGE_KEY_MESSAGES], (res) => {
+      chrome.storage.local.get([STORAGE_KEY_UNSENT, STORAGE_KEY_MESSAGES], function (res) {
         const currentUnsent = Array.isArray(res[STORAGE_KEY_UNSENT]) ? res[STORAGE_KEY_UNSENT] : [];
         const currentCaptured = Array.isArray(res[STORAGE_KEY_MESSAGES]) ? res[STORAGE_KEY_MESSAGES] : [];
 
@@ -626,16 +664,14 @@ function handleImportFile(file) {
             [STORAGE_KEY_MESSAGES]: capturedMerge.result.slice(-2000),
             [STORAGE_KEY_CLEANED_FLAG]: true
           },
-          () => {
+          function () {
             loadPopupData();
-            showStatusBanner(
-              `✅ Đã nhập thêm ${unsentMerge.addedCount} tin mới (hợp nhất ${unsentMerge.mergedCount} tin trùng)!`
-            );
+            showStatus(`Đã nhập ${unsentMerge.addedCount} tin mới, hợp nhất ${unsentMerge.mergedCount} tin trùng`);
           }
         );
       });
     } catch (_) {
-      showStatusBanner('❌ Không thể đọc tệp JSON. Vui lòng kiểm tra lại định dạng tệp!', true);
+      showStatus('Không đọc được tệp JSON, kiểm tra lại định dạng', true);
     }
   };
   reader.readAsText(file, 'utf-8');
@@ -645,85 +681,101 @@ function handleImportFile(file) {
 // SỰ KIỆN GIAO DIỆN
 // ============================================================================
 
-searchInputEl.addEventListener('input', () => {
-  renderList();
-});
+function resetClearAllButton() {
+  if (appState.clearConfirmTimer) clearTimeout(appState.clearConfirmTimer);
+  appState.clearConfirmTimer = null;
+  dom.clearAllBtn.classList.remove('confirming');
+}
 
-clearSearchBtnEl.addEventListener('click', () => {
-  searchInputEl.value = '';
-  searchInputEl.focus();
-  renderList();
-});
-
-threadFilterEl.addEventListener('change', () => {
-  activeThreadFilter = threadFilterEl.value;
-  renderList();
-});
-
-filterTabsEl.querySelectorAll('.tab-btn').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    filterTabsEl.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
-    btn.classList.add('active');
-    activeTabFilter = btn.dataset.filter || 'all';
-    renderList();
-  });
-});
-
-exportBtnEl.addEventListener('click', exportBackupJson);
-
-importBtnEl.addEventListener('click', () => {
-  importFileInputEl.value = '';
-  importFileInputEl.click();
-});
-
-importFileInputEl.addEventListener('change', (e) => {
-  const file = e.target.files?.[0];
-  if (file) {
-    handleImportFile(file);
-  }
-});
-
-clearAllBtnEl.addEventListener('click', () => {
-  if (allUnsentMessages.length === 0) {
-    showStatusBanner('Danh sách tin nhắn bị gỡ đang trống.');
+function handleClearAllClick() {
+  if (appState.unsentMessages.length === 0) {
+    showStatus('Danh sách tin nhắn bị gỡ đang trống');
     return;
   }
 
-  if (!clearAllBtnEl.classList.contains('confirming')) {
-    clearAllBtnEl.classList.add('confirming');
-    clearAllBtnEl.innerHTML = '<span>⚠️</span> Xác nhận?';
-    if (clearConfirmTimeout) clearTimeout(clearConfirmTimeout);
-    clearConfirmTimeout = setTimeout(() => {
-      clearAllBtnEl.classList.remove('confirming');
-      clearAllBtnEl.innerHTML = '<span>🗑</span> Xóa hết';
-    }, 3000);
+  // Lần bấm đầu chỉ chuyển sang trạng thái xác nhận, bấm lần hai trong 3s mới xóa
+  if (!dom.clearAllBtn.classList.contains('confirming')) {
+    dom.clearAllBtn.classList.add('confirming');
+    if (appState.clearConfirmTimer) clearTimeout(appState.clearConfirmTimer);
+    appState.clearConfirmTimer = setTimeout(resetClearAllButton, CLEAR_CONFIRM_MS);
     return;
   }
 
-  if (clearConfirmTimeout) clearTimeout(clearConfirmTimeout);
-  clearAllBtnEl.classList.remove('confirming');
-  clearAllBtnEl.innerHTML = '<span>🗑</span> Xóa hết';
-
-  allUnsentMessages = [];
-  chrome.storage.local.set({ [STORAGE_KEY_UNSENT]: [] }, () => {
-    updateStatsAndThreadOptions();
-    renderList();
-    showStatusBanner('🗑 Đã xóa toàn bộ lịch sử tin nhắn bị gỡ.');
+  resetClearAllButton();
+  appState.unsentMessages = [];
+  chrome.storage.local.set({ [STORAGE_KEY_UNSENT]: [] }, function () {
+    refreshView();
+    showStatus('Đã xóa toàn bộ lịch sử tin nhắn bị gỡ');
   });
-});
+}
 
-lightboxCloseEl.addEventListener('click', closeLightbox);
-lightboxModalEl.addEventListener('click', (e) => {
-  if (e.target === lightboxModalEl) {
-    closeLightbox();
-  }
-});
+function bindEvents() {
+  dom.searchInput.addEventListener('input', renderList);
 
-chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === 'local' && (changes[STORAGE_KEY_UNSENT] || changes[STORAGE_KEY_MESSAGES])) {
-    loadPopupData();
-  }
-});
+  dom.clearSearchBtn.addEventListener('click', function (e) {
+    e.preventDefault();
+    dom.searchInput.value = '';
+    dom.searchInput.focus();
+    renderList();
+  });
 
-loadPopupData();
+  dom.threadFilter.addEventListener('change', function () {
+    appState.threadFilter = dom.threadFilter.value;
+    renderList();
+  });
 
+  dom.tabButtons.forEach(btn => {
+    btn.addEventListener('click', function () {
+      dom.tabButtons.forEach(b => b.classList.toggle('active', b === btn));
+      appState.tabFilter = btn.dataset.filter || 'all';
+      renderList();
+    });
+  });
+
+  dom.exportBtn.addEventListener('click', exportBackupJson);
+
+  dom.importBtn.addEventListener('click', function () {
+    dom.importFileInput.value = '';
+    dom.importFileInput.click();
+  });
+
+  dom.importFileInput.addEventListener('change', function (e) {
+    const file = e.target.files?.[0];
+    if (file) {
+      handleImportFile(file);
+    }
+  });
+
+  dom.clearAllBtn.addEventListener('click', handleClearAllClick);
+
+  dom.lightboxClose.addEventListener('click', closeLightbox);
+  dom.lightbox.addEventListener('click', function (e) {
+    if (e.target === dom.lightbox) {
+      closeLightbox();
+    }
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !dom.lightbox.hidden) {
+      e.preventDefault();
+      closeLightbox();
+    }
+  });
+
+  chrome.storage.onChanged.addListener(function (changes, areaName) {
+    if (areaName === 'local' && (changes[STORAGE_KEY_UNSENT] || changes[STORAGE_KEY_MESSAGES])) {
+      loadPopupData();
+    }
+  });
+}
+
+function init() {
+  cacheDom();
+  try {
+    dom.versionTag.textContent = `v${chrome.runtime.getManifest().version}`;
+  } catch (_) {}
+  bindEvents();
+  loadPopupData();
+}
+
+init();

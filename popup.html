@@ -3,110 +3,179 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FB Unsend Message Viewer</title>
+  <title>FB Unsend Viewer</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div class="popup-container">
-    <header class="popup-header">
-      <div class="brand-group">
-        <div class="brand-logo" title="FB Unsend Viewer">🛡️</div>
+  <!-- ===== Bộ icon SVG dùng chung (gọi bằng <use href="#i-...">) ===== -->
+  <svg class="icon-sprite" aria-hidden="true">
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 20V9"/><path d="m7 14 5-5 5 5"/><path d="M5 4h14"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="m6 7 1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4h6v3"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6.5A2.5 2.5 0 0 1 7.5 4H15"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 11.5c0 4.1-3.6 7.5-8 7.5-1 0-1.9-.2-2.8-.5L4 20l1.3-3.9A7.2 7.2 0 0 1 4 11.5C4 7.4 7.6 4 12 4s8 3.4 8 7.5z"/></symbol>
+    <symbol id="i-reply" viewBox="0 0 24 24"><path d="M5 5v6a4 4 0 0 0 4 4h10"/><path d="m15 11 4 4-4 4"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.5v.01"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M3.5 13.5h4.5l1.5 2.5h5l1.5-2.5h4.5"/><path d="M6.2 5h11.6l2.7 8.5V19a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1v-5.5z"/></symbol>
+  </svg>
+
+  <div class="app">
+    <!-- ===== Header ===== -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path class="logo-bubble" d="M12 3.2c-4.9 0-8.8 3.6-8.8 8 0 2.5 1.2 4.7 3.2 6.2v3.4l3.1-1.7c.8.2 1.6.3 2.5.3 4.9 0 8.8-3.6 8.8-8.1s-3.9-8.1-8.8-8.1z"/>
+            <path class="logo-arrow" d="M10 8.6 7.6 11 10 13.4"/>
+            <path class="logo-arrow" d="M7.9 11h5.3a2.6 2.6 0 0 1 0 5.2h-1.5"/>
+          </svg>
+        </div>
         <div class="brand-text">
-          <div class="brand-title-row">
-            <h1>FB Unsend Viewer</h1>
-            <span class="live-dot" title="Đang bảo vệ theo thời gian thực"></span>
-          </div>
-          <p class="brand-subtitle">Khôi phục tin nhắn thu hồi • E2EE Ready</p>
+          <h1>Tin nhắn đã gỡ</h1>
+          <p class="brand-status">
+            <span class="live-dot" aria-hidden="true"></span>
+            <span>Đang theo dõi Messenger</span>
+          </p>
         </div>
       </div>
 
       <div class="header-actions">
-        <button id="export-btn" class="tool-btn" title="Xuất toàn bộ dữ liệu ra tệp JSON để sao lưu (Backup)">
-          <span>⬇</span> Xuất
+        <button type="button" id="export-btn" class="icon-btn" title="Xuất toàn bộ dữ liệu ra tệp JSON (sao lưu)" aria-label="Xuất dữ liệu">
+          <svg class="icon"><use href="#i-download"/></svg>
         </button>
-        <button id="import-btn" class="tool-btn" title="Nhập dữ liệu từ tệp JSON đã sao lưu">
-          <span>⬆</span> Nhập
+        <button type="button" id="import-btn" class="icon-btn" title="Nhập dữ liệu từ tệp JSON đã sao lưu" aria-label="Nhập dữ liệu">
+          <svg class="icon"><use href="#i-upload"/></svg>
         </button>
         <input type="file" id="import-file-input" accept=".json,application/json" hidden>
-        <button id="clear-all-btn" class="tool-btn danger-btn" title="Xóa toàn bộ lịch sử tin nhắn bị gỡ">
-          <span>🗑</span> Xóa hết
+        <button type="button" id="clear-all-btn" class="icon-btn danger" title="Xóa toàn bộ lịch sử tin nhắn bị gỡ" aria-label="Xóa hết">
+          <svg class="icon"><use href="#i-trash"/></svg>
+          <span class="confirm-label">Xóa hết?</span>
         </button>
       </div>
     </header>
 
-    <div id="status-banner" class="status-banner" hidden></div>
-
-    <section class="stats-bar">
-      <div class="stat-item">
-        <span class="stat-value accent-red" id="stat-total">0</span>
-        <span class="stat-label">Đã thu hồi</span>
-      </div>
-      <div class="stat-item">
-        <span class="stat-value accent-amber" id="stat-others">0</span>
-        <span class="stat-label">Người khác</span>
-      </div>
-      <div class="stat-item">
-        <span class="stat-value accent-blue" id="stat-media">0</span>
-        <span class="stat-label">Có hình ảnh</span>
-      </div>
-      <div class="stat-item">
-        <span class="stat-value accent-emerald" id="stat-cached">0</span>
-        <span class="stat-label">Lưu tạm</span>
-      </div>
-    </section>
-
-    <section class="controls-section">
+    <!-- ===== Tìm kiếm & bộ lọc ===== -->
+    <section class="controls">
       <div class="search-row">
-        <div class="search-input-wrap">
-          <span class="search-icon">🔍</span>
-          <input
-            type="text"
-            id="search-input"
-            placeholder="Tìm nội dung, người gửi hoặc tên nhóm..."
-            autocomplete="off"
-          >
-          <button id="clear-search-btn" class="clear-search-btn" title="Xóa từ khóa" hidden>✕</button>
+        <label class="search-field">
+          <svg class="icon search-icon"><use href="#i-search"/></svg>
+          <input type="text" id="search-input" placeholder="Tìm tin nhắn, người gửi…" autocomplete="off" spellcheck="false">
+          <button type="button" id="clear-search-btn" class="clear-search-btn" title="Xóa từ khóa" aria-label="Xóa từ khóa" hidden>
+            <svg class="icon"><use href="#i-x"/></svg>
+          </button>
+        </label>
+
+        <div class="thread-field">
+          <svg class="icon thread-icon"><use href="#i-chat"/></svg>
+          <select id="thread-filter" title="Lọc theo cuộc trò chuyện / nhóm chat">
+            <option value="ALL">Mọi đoạn chat</option>
+          </select>
+          <svg class="icon thread-chevron"><use href="#i-chevron"/></svg>
         </div>
-        <select id="thread-filter" class="thread-select" title="Lọc theo cuộc trò chuyện / nhóm chat">
-          <option value="ALL">Tất cả cuộc trò chuyện</option>
-        </select>
       </div>
 
-      <div class="filter-tabs" id="filter-tabs">
-        <button type="button" class="tab-btn active" data-filter="all">Tất cả</button>
-        <button type="button" class="tab-btn" data-filter="others">Người khác gỡ</button>
-        <button type="button" class="tab-btn" data-filter="self">Bạn gỡ</button>
-        <button type="button" class="tab-btn" data-filter="media">📷 Có ảnh</button>
+      <div class="filter-tabs" id="filter-tabs" role="tablist">
+        <button type="button" class="tab-btn active" data-filter="all" role="tab">
+          Tất cả <span class="tab-count" data-count="all">0</span>
+        </button>
+        <button type="button" class="tab-btn" data-filter="others" role="tab">
+          Người khác <span class="tab-count" data-count="others">0</span>
+        </button>
+        <button type="button" class="tab-btn" data-filter="self" role="tab">
+          Bạn gỡ <span class="tab-count" data-count="self">0</span>
+        </button>
+        <button type="button" class="tab-btn" data-filter="media" role="tab">
+          Có ảnh <span class="tab-count" data-count="media">0</span>
+        </button>
       </div>
     </section>
 
-    <main id="unsent-list" class="unsent-list">
-      <div class="empty-state">
-        <div class="empty-icon">📭</div>
-        <div class="empty-title">Chưa có tin nhắn nào bị gỡ</div>
-        <div class="empty-desc">Mọi tin nhắn văn bản và hình ảnh bị thu hồi trên Facebook &amp; Messenger sẽ tự động hiển thị tại đây.</div>
-      </div>
-    </main>
+    <!-- ===== Danh sách ===== -->
+    <main id="unsent-list" class="unsent-list"></main>
 
-    <footer class="popup-footer">
-      <span id="footer-info">Đồng bộ trên facebook.com &amp; messages/t/*</span>
-      <span class="version-tag">v4.0 Pro</span>
+    <!-- ===== Footer ===== -->
+    <footer class="app-footer">
+      <span id="footer-info">Lưu tạm 0 tin để đối chiếu</span>
+      <span id="version-tag" class="version-tag"></span>
     </footer>
 
-    <div id="lightbox-modal" class="lightbox-modal" hidden>
-      <div class="lightbox-content">
-        <img id="lightbox-img" src="" alt="Ảnh khôi phục">
-        <div class="lightbox-actions">
-          <a id="lightbox-download" href="" download="fb-unsent-image.webp" class="lightbox-btn primary">
-            ⬇ Tải ảnh về máy
-          </a>
-          <button type="button" id="lightbox-close" class="lightbox-btn">
-            ✕ Đóng
-          </button>
-        </div>
-      </div>
+    <!-- Thông báo nổi (thay cho banner cũ) -->
+    <div id="status-toast" class="status-toast" role="status" hidden>
+      <svg class="icon status-icon"><use href="#i-check"/></svg>
+      <span class="status-text"></span>
+    </div>
+
+    <!-- ===== Lightbox xem ảnh ===== -->
+    <div id="lightbox-modal" class="lightbox" hidden>
+      <button type="button" id="lightbox-close" class="lightbox-close" title="Đóng (Esc)" aria-label="Đóng">
+        <svg class="icon"><use href="#i-x"/></svg>
+      </button>
+      <img id="lightbox-img" src="" alt="Ảnh khôi phục">
+      <a id="lightbox-download" href="" download="fb-unsent-image.webp" class="lightbox-download">
+        <svg class="icon"><use href="#i-download"/></svg>
+        Tải ảnh về máy
+      </a>
     </div>
   </div>
+
+  <!-- ===== Templates ===== -->
+  <template id="dayLabelTemplate">
+    <div class="day-label"></div>
+  </template>
+
+  <template id="messageCardTemplate">
+    <article class="msg-card">
+      <div class="msg-avatar"></div>
+      <div class="msg-main">
+        <div class="msg-head">
+          <span class="msg-name"></span>
+          <span class="msg-role" hidden></span>
+          <time class="msg-time"></time>
+        </div>
+        <div class="msg-thread" hidden>
+          <svg class="icon"><use href="#i-chat"/></svg>
+          <span class="msg-thread-name"></span>
+        </div>
+        <div class="msg-anchor" hidden>
+          <svg class="icon"><use href="#i-reply"/></svg>
+          <span class="msg-anchor-text"></span>
+        </div>
+        <div class="msg-bubble" hidden></div>
+        <div class="msg-media" hidden></div>
+      </div>
+      <div class="msg-actions">
+        <button type="button" class="msg-action" data-action="copy" title="Sao chép nội dung" aria-label="Sao chép" hidden>
+          <svg class="icon"><use href="#i-copy"/></svg>
+        </button>
+        <a class="msg-action" data-action="download" title="Tải ảnh về máy" aria-label="Tải ảnh" hidden>
+          <svg class="icon"><use href="#i-download"/></svg>
+        </a>
+        <button type="button" class="msg-action danger" data-action="delete" title="Xóa khỏi lịch sử" aria-label="Xóa">
+          <svg class="icon"><use href="#i-trash"/></svg>
+        </button>
+      </div>
+    </article>
+  </template>
+
+  <template id="mediaThumbTemplate">
+    <button type="button" class="media-thumb" title="Nhấn để phóng to hoặc tải ảnh về máy">
+      <img alt="Ảnh đính kèm" loading="lazy">
+    </button>
+  </template>
+
+  <template id="emptyStateTemplate">
+    <div class="empty-state">
+      <div class="empty-icon">
+        <svg class="icon"><use href="#i-inbox"/></svg>
+      </div>
+      <div class="empty-title"></div>
+      <div class="empty-desc"></div>
+    </div>
+  </template>
 
   <script src="popup.js"></script>
 </body>
