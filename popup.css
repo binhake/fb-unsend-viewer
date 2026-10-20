@@ -20,6 +20,7 @@
   --shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
   --overlay: rgba(0, 0, 0, 0.85);
   --toast-bg: #1c1e21;
+  --modal-overlay: rgba(244, 244, 244, 0.8);
   color-scheme: light;
 }
 
@@ -41,6 +42,7 @@
     --bubble-other: #3a3b3c;
     --shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
     --toast-bg: #4e4f50;
+    --modal-overlay: rgba(0, 0, 0, 0.6);
     color-scheme: dark;
   }
 }
@@ -253,27 +255,10 @@ button {
   height: 18px;
 }
 
-.icon-btn .confirm-label {
-  display: none;
-  font-size: 13px;
-  font-weight: 600;
-}
-
 .icon-btn.danger:hover {
   background: var(--danger-soft);
   color: var(--danger);
   filter: none;
-}
-
-.icon-btn.danger.confirming {
-  width: auto;
-  padding: 0 12px;
-  background: var(--danger);
-  color: #ffffff;
-}
-
-.icon-btn.danger.confirming .confirm-label {
-  display: inline;
 }
 
 /* ===== Tìm kiếm & bộ lọc ===== */
@@ -446,6 +431,77 @@ button {
 .tab-btn.active .tab-count:not(.is-zero) {
   background: var(--accent);
   color: #ffffff;
+}
+
+/* ===== Công tắc thông báo ===== */
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.setting-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--muted);
+}
+
+.setting-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.setting-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.setting-hint {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Công tắc gạt kiểu Facebook (giống fb-verified-badge) */
+.switch {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 40px;
+  height: 22px;
+  margin: 0;
+  border-radius: 11px;
+  background: var(--control);
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 0.15s;
+}
+
+.switch:checked {
+  background: var(--accent);
+}
+
+.switch:checked::after {
+  transform: translateX(18px);
 }
 
 /* ===== Danh sách tin nhắn ===== */
@@ -844,6 +900,92 @@ button {
   background: #0757d9;
 }
 
+/* ===== Hộp thoại xác nhận ===== */
+.modal {
+  position: absolute;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--modal-overlay);
+  animation: fadeIn 0.15s ease-out;
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 20px 20px 16px;
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  text-align: center;
+  animation: modalIn 0.18s ease-out;
+}
+
+.modal-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 6px;
+  border-radius: 50%;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.modal-icon .icon {
+  width: 22px;
+  height: 22px;
+}
+
+.modal-title {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.modal-desc {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.modal-desc strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  margin-top: 12px;
+}
+
+.btn {
+  flex: 1;
+  height: 36px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 8px;
+  background: var(--control);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.btn:hover {
+  filter: brightness(0.95);
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: #ffffff;
+}
+
 /* ===== Animation ===== */
 @keyframes livePulse {
   0% {
@@ -864,6 +1006,17 @@ button {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes modalIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
   }
 }
 

@@ -4,8 +4,7 @@
 const STORAGE_KEY_MESSAGES = 'fb_captured_messages_v2';
 const STORAGE_KEY_UNSENT = 'fb_unsent_messages_v2';
 const STORAGE_KEY_CLEANED_FLAG = 'fb_unsend_schema_v4_cleaned';
-
-const CLEAR_CONFIRM_MS = 3000;
+const STORAGE_KEY_TOAST_ENABLED = 'fb_unsend_toast_enabled';
 const STATUS_HIDE_MS = 3600;
 const COPY_FEEDBACK_MS = 1200;
 const CARD_REMOVE_ANIM_MS = 180;
@@ -22,7 +21,6 @@ const appState = {
   capturedMessages: [],
   tabFilter: 'all', // 'all' | 'others' | 'self' | 'media'
   threadFilter: 'ALL',
-  clearConfirmTimer: null,
   statusTimer: null
 };
 
@@ -41,6 +39,12 @@ function cacheDom() {
   dom.importBtn = document.getElementById('import-btn');
   dom.importFileInput = document.getElementById('import-file-input');
   dom.clearAllBtn = document.getElementById('clear-all-btn');
+  dom.toastToggle = document.getElementById('toast-toggle');
+
+  dom.confirmModal = document.getElementById('confirm-modal');
+  dom.confirmDesc = document.getElementById('confirm-desc');
+  dom.confirmCancel = document.getElementById('confirm-cancel');
+  dom.confirmOk = document.getElementById('confirm-ok');
 
   dom.footerInfo = document.getElementById('footer-info');
   dom.versionTag = document.getElementById('version-tag');
@@ -473,9 +477,11 @@ function removeUnsentMessage(messageId) {
 }
 
 function loadPopupData() {
-  chrome.storage.local.get([STORAGE_KEY_UNSENT, STORAGE_KEY_MESSAGES], function (res) {
+  chrome.storage.local.get([STORAGE_KEY_UNSENT, STORAGE_KEY_MESSAGES, STORAGE_KEY_TOAST_ENABLED], function (res) {
     appState.unsentMessages = Array.isArray(res[STORAGE_KEY_UNSENT]) ? res[STORAGE_KEY_UNSENT] : [];
     appState.capturedMessages = Array.isArray(res[STORAGE_KEY_MESSAGES]) ? res[STORAGE_KEY_MESSAGES] : [];
+    // Chưa từng lưu thì coi như đang bật
+    dom.toastToggle.checked = res[STORAGE_KEY_TOAST_ENABLED] !== false;
     refreshView();
   });
 
@@ -677,10 +683,24 @@ function handleImportFile(file) {
 // SỰ KIỆN GIAO DIỆN
 // ============================================================================
 
-function resetClearAllButton() {
-  if (appState.clearConfirmTimer) clearTimeout(appState.clearConfirmTimer);
-  appState.clearConfirmTimer = null;
-  dom.clearAllBtn.classList.remove('confirming');
+// ── Hộp thoại xác nhận xóa toàn bộ ──
+function openConfirmModal() {
+  const count = appState.unsentMessages.length.toLocaleString('vi-VN');
+  const strong = document.createElement('strong');
+  strong.textContent = `${count} tin nhắn đã gỡ`;
+  dom.confirmDesc.replaceChildren(
+    'Toàn bộ ',
+    strong,
+    ' sẽ bị xóa vĩnh viễn và không thể khôi phục. Nên xuất bản sao lưu trước nếu cần.'
+  );
+  dom.confirmModal.hidden = false;
+  // Mặc định focus vào "Hủy" để lỡ nhấn Enter cũng không xóa nhầm
+  dom.confirmCancel.focus();
+}
+
+function closeConfirmModal() {
+  dom.confirmModal.hidden = true;
+  dom.clearAllBtn.focus();
 }
 
 function handleClearAllClick() {
@@ -688,16 +708,11 @@ function handleClearAllClick() {
     showStatus('Danh sách tin nhắn bị gỡ đang trống');
     return;
   }
+  openConfirmModal();
+}
 
-  // Lần bấm đầu chỉ chuyển sang trạng thái xác nhận, bấm lần hai trong 3s mới xóa
-  if (!dom.clearAllBtn.classList.contains('confirming')) {
-    dom.clearAllBtn.classList.add('confirming');
-    if (appState.clearConfirmTimer) clearTimeout(appState.clearConfirmTimer);
-    appState.clearConfirmTimer = setTimeout(resetClearAllButton, CLEAR_CONFIRM_MS);
-    return;
-  }
-
-  resetClearAllButton();
+function clearAllUnsentMessages() {
+  dom.confirmModal.hidden = true;
   appState.unsentMessages = [];
   chrome.storage.local.set({ [STORAGE_KEY_UNSENT]: [] }, function () {
     refreshView();
@@ -743,6 +758,20 @@ function bindEvents() {
   });
 
   dom.clearAllBtn.addEventListener('click', handleClearAllClick);
+  dom.confirmCancel.addEventListener('click', closeConfirmModal);
+  dom.confirmOk.addEventListener('click', clearAllUnsentMessages);
+  dom.confirmModal.addEventListener('click', function (e) {
+    if (e.target === dom.confirmModal) {
+      closeConfirmModal();
+    }
+  });
+
+  dom.toastToggle.addEventListener('change', function () {
+    const enabled = dom.toastToggle.checked;
+    chrome.storage.local.set({ [STORAGE_KEY_TOAST_ENABLED]: enabled }, function () {
+      showStatus(enabled ? 'Đã bật thông báo ở góc màn hình' : 'Đã tắt thông báo ở góc màn hình');
+    });
+  });
 
   dom.lightboxClose.addEventListener('click', closeLightbox);
   dom.lightbox.addEventListener('click', function (e) {
@@ -752,7 +781,11 @@ function bindEvents() {
   });
 
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && !dom.lightbox.hidden) {
+    if (e.key !== 'Escape') return;
+    if (!dom.confirmModal.hidden) {
+      e.preventDefault();
+      closeConfirmModal();
+    } else if (!dom.lightbox.hidden) {
       e.preventDefault();
       closeLightbox();
     }

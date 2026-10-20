@@ -4,7 +4,11 @@
   const STORAGE_KEY_MESSAGES = 'fb_captured_messages_v2';
   const STORAGE_KEY_UNSENT = 'fb_unsent_messages_v2';
   const STORAGE_KEY_CLEANED_FLAG = 'fb_unsend_schema_v4_cleaned';
+  const STORAGE_KEY_TOAST_ENABLED = 'fb_unsend_toast_enabled';
   const MAX_STORED_MESSAGES = 500;
+
+  // Tùy chọn hiện thông báo ở góc màn hình (bật/tắt từ popup), mặc định bật
+  let isToastEnabled = true;
 
   const messagesById = new Map();
   const domRowMessages = new WeakMap();
@@ -180,9 +184,10 @@
       chrome.storage.local.remove(['fb_captured_messages_v1', 'fb_unsent_messages_v1']);
 
       chrome.storage.local.get(
-        [STORAGE_KEY_MESSAGES, STORAGE_KEY_UNSENT, STORAGE_KEY_CLEANED_FLAG],
+        [STORAGE_KEY_MESSAGES, STORAGE_KEY_UNSENT, STORAGE_KEY_CLEANED_FLAG, STORAGE_KEY_TOAST_ENABLED],
         (res) => {
           if (!isExtensionContextValid() || !res) return;
+          isToastEnabled = res[STORAGE_KEY_TOAST_ENABLED] !== false;
           try {
             if (!res[STORAGE_KEY_CLEANED_FLAG]) {
               chrome.storage.local.set({
@@ -1814,7 +1819,8 @@
   }
 
   function showUnsentToast(record) {
-    if (!document.body) return;
+    // Tắt thông báo chỉ ẩn toast; tin vẫn được khôi phục trên khung chat và lưu lịch sử
+    if (!isToastEnabled || !document.body) return;
 
     let toastContainer = document.getElementById('fb-unsend-toast-container');
     if (!toastContainer) {
@@ -1938,6 +1944,9 @@
       chrome.storage.onChanged.addListener((changes, areaName) => {
         if (!isExtensionContextValid() || areaName !== 'local') return;
         try {
+          if (changes[STORAGE_KEY_TOAST_ENABLED]) {
+            isToastEnabled = changes[STORAGE_KEY_TOAST_ENABLED].newValue !== false;
+          }
           let updated = false;
           if (changes[STORAGE_KEY_MESSAGES]?.newValue) {
             const newMsgs = changes[STORAGE_KEY_MESSAGES].newValue;
