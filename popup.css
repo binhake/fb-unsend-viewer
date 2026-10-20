@@ -1,119 +1,47 @@
 /* popup.css - Giao diện popup quản lý & sao lưu tin nhắn bị gỡ trên Facebook */
+/* Phong cách bám theo giao diện Facebook (cùng bộ màu với fb-verified-badge) */
 
-/* ===== Font: Be Vietnam Pro (nhúng sẵn trong extension, thiết kế riêng cho tiếng Việt) ===== */
-@font-face {
-  font-family: 'Be Vietnam Pro';
-  font-weight: 400;
-  font-display: block;
-  src: url('fonts/BeVietnamPro-Regular.ttf') format('truetype');
-}
-
-@font-face {
-  font-family: 'Be Vietnam Pro';
-  font-weight: 500;
-  font-display: block;
-  src: url('fonts/BeVietnamPro-Medium.ttf') format('truetype');
-}
-
-@font-face {
-  font-family: 'Be Vietnam Pro';
-  font-weight: 600;
-  font-display: block;
-  src: url('fonts/BeVietnamPro-SemiBold.ttf') format('truetype');
-}
-
-@font-face {
-  font-family: 'Be Vietnam Pro';
-  font-weight: 700;
-  font-display: block;
-  src: url('fonts/BeVietnamPro-Bold.ttf') format('truetype');
-}
-
-/* ===== Design tokens (mặc định tối, tự đổi sáng theo hệ thống) ===== */
+/* ===== Design tokens (mặc định sáng, tự đổi tối theo hệ thống) ===== */
 :root {
-  color-scheme: dark;
-
-  --bg: #101216;
-  --surface: #171a20;
-  --surface-2: #1f232b;
-  --surface-3: #282d37;
-  --line: rgba(255, 255, 255, 0.07);
-  --line-strong: rgba(255, 255, 255, 0.13);
-
-  --text: #eceef2;
-  --text-2: #a3a9b6;
-  --text-3: #6f7583;
-
-  --accent: #ff4d4f;
-  --accent-text: #ff7d7f;
-  --accent-soft: rgba(255, 77, 79, 0.13);
-  --accent-ring: rgba(255, 77, 79, 0.45);
-
-  --self: #4c8dff;
-  --self-text: #8db6ff;
-  --self-soft: rgba(76, 141, 255, 0.14);
-
-  --success: #34d399;
-  --success-soft: rgba(52, 211, 153, 0.14);
-
-  --bubble-other: #262a33;
-  --bubble-other-text: #eceef2;
-  --bubble-self: linear-gradient(135deg, #3d7cff 0%, #7b5cff 100%);
-  --bubble-self-text: #ffffff;
-
-  --shadow-pop: 0 10px 30px rgba(0, 0, 0, 0.45);
-  --overlay: rgba(6, 7, 10, 0.88);
-
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 18px;
-
-  --font: 'Be Vietnam Pro', "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif;
-
-  /* Thang cỡ chữ & độ đậm dùng chung — chỉnh ở đây thay vì rải số lẻ khắp file */
-  --fs-2xs: 10.5px;
-  --fs-xs: 11.5px;
-  --fs-sm: 12px;
-  --fs-base: 13px;
-  --fs-lg: 15px;
-
-  --fw-regular: 400;
-  --fw-medium: 500;
-  --fw-semibold: 600;
+  --bg: #f0f2f5;
+  --surface: #ffffff;
+  --text: #050505;
+  --muted: #65676b;
+  --border: #e4e6eb;
+  --hover: #f2f2f2;
+  --accent: #0866ff;
+  --accent-hover: #0757d9;
+  --accent-soft: #e7f0ff;
+  --danger: #e41e3f;
+  --danger-soft: #ffebee;
+  --success: #31a24c;
+  --control: #e4e6eb;
+  --bubble-other: #f0f0f0;
+  --shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+  --overlay: rgba(0, 0, 0, 0.85);
+  --toast-bg: #1c1e21;
+  color-scheme: light;
 }
 
-@media (prefers-color-scheme: light) {
+@media (prefers-color-scheme: dark) {
   :root {
-    color-scheme: light;
-
-    --bg: #f4f5f7;
-    --surface: #ffffff;
-    --surface-2: #eef0f3;
-    --surface-3: #e3e6eb;
-    --line: rgba(16, 20, 28, 0.08);
-    --line-strong: rgba(16, 20, 28, 0.15);
-
-    --text: #15171c;
-    --text-2: #5a606d;
-    --text-3: #8a909c;
-
-    --accent: #e5383b;
-    --accent-text: #d42f32;
-    --accent-soft: rgba(229, 56, 59, 0.1);
-    --accent-ring: rgba(229, 56, 59, 0.4);
-
-    --self: #2f6fed;
-    --self-text: #2a62d6;
-    --self-soft: rgba(47, 111, 237, 0.1);
-
-    --success: #0f9f6e;
-    --success-soft: rgba(15, 159, 110, 0.12);
-
-    --bubble-other: #eceef2;
-    --bubble-other-text: #15171c;
-
-    --shadow-pop: 0 10px 30px rgba(16, 20, 28, 0.16);
-    --overlay: rgba(12, 14, 18, 0.82);
+    --bg: #18191a;
+    --surface: #242526;
+    --text: #e4e6eb;
+    --muted: #b0b3b8;
+    --border: #3e4042;
+    --hover: #3a3b3c;
+    --accent: #2d88ff;
+    --accent-hover: #4a99ff;
+    --accent-soft: #263951;
+    --danger: #f3425f;
+    --danger-soft: #4a2229;
+    --success: #45bd62;
+    --control: #3a3b3c;
+    --bubble-other: #3a3b3c;
+    --shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+    --toast-bg: #4e4f50;
+    color-scheme: dark;
   }
 }
 
@@ -133,12 +61,8 @@ body {
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: var(--font);
-  font-size: var(--fs-base);
-  font-weight: var(--fw-regular);
-  line-height: 1.45;
+  font: 14px/1.4 "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif;
   overflow: hidden;
-  text-rendering: optimizeLegibility;
 }
 
 button,
@@ -166,10 +90,10 @@ button {
 .icon {
   width: 16px;
   height: 16px;
-  flex-shrink: 0;
+  flex: none;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.9;
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -183,17 +107,16 @@ button {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--surface-3);
-  border: 2px solid var(--bg);
-  border-radius: 999px;
+  background: var(--control);
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-3);
+  background: var(--muted);
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent-ring);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -204,31 +127,36 @@ button {
   height: 100%;
 }
 
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
 /* ===== Header ===== */
 .app-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 16px 12px;
+  padding: 12px 12px 10px;
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 10px;
   min-width: 0;
 }
 
 .brand-logo {
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
-  background: linear-gradient(140deg, #ff6a5c 0%, #ff3d6e 55%, #c837ff 100%);
   display: grid;
   place-items: center;
-  flex-shrink: 0;
-  box-shadow: 0 6px 16px rgba(255, 61, 110, 0.3);
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 .brand-logo svg {
@@ -242,20 +170,25 @@ button {
 
 .brand-logo .logo-arrow {
   fill: none;
-  stroke: #ff3d6e;
-  stroke-width: 1.9;
+  stroke: var(--accent);
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
 .brand-text {
   min-width: 0;
+  overflow: hidden;
+}
+
+.brand-status span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .brand-text h1 {
-  font-size: var(--fs-lg);
-  font-weight: var(--fw-semibold);
-  letter-spacing: -0.015em;
+  font-size: 18px;
+  font-weight: 700;
   line-height: 1.25;
   white-space: nowrap;
 }
@@ -264,16 +197,16 @@ button {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 1px;
-  font-size: var(--fs-xs);
-  color: var(--text-2);
+  color: var(--muted);
+  font-size: 13px;
   white-space: nowrap;
 }
 
 .live-dot {
   position: relative;
-  width: 7px;
-  height: 7px;
+  flex: none;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--success);
 }
@@ -291,47 +224,52 @@ button {
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
+  gap: 6px;
+  flex: none;
 }
 
+/* Nút tròn xám giống nút trên thanh header của Facebook */
 .icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 32px;
-  min-width: 32px;
-  padding: 0 8px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-2);
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 17px;
+  background: var(--control);
+  color: var(--text);
   white-space: nowrap;
-  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  transition: background-color 0.15s, color 0.15s;
 }
 
 .icon-btn:hover {
-  background: var(--surface-2);
-  color: var(--text);
+  filter: brightness(0.95);
 }
 
-.icon-btn.danger:hover {
-  background: var(--accent-soft);
-  color: var(--accent-text);
+.icon-btn .icon {
+  width: 18px;
+  height: 18px;
 }
 
 .icon-btn .confirm-label {
   display: none;
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-medium);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.icon-btn.danger:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+  filter: none;
 }
 
 .icon-btn.danger.confirming {
-  background: var(--accent);
-  border-color: var(--accent);
+  width: auto;
+  padding: 0 12px;
+  background: var(--danger);
   color: #ffffff;
-  padding: 0 10px;
 }
 
 .icon-btn.danger.confirming .confirm-label {
@@ -343,8 +281,8 @@ button {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 0 16px 12px;
-  border-bottom: 1px solid var(--line);
+  margin: 0 12px;
+  padding: 12px;
 }
 
 .search-row {
@@ -358,16 +296,14 @@ button {
   display: flex;
   align-items: center;
   height: 36px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  border-radius: 18px;
+  background: var(--bg);
 }
 
 .search-field:focus-within,
 .thread-field:focus-within {
-  border-color: var(--accent-ring);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .search-field {
@@ -378,65 +314,63 @@ button {
 
 .search-icon {
   position: absolute;
-  left: 11px;
-  color: var(--text-3);
+  left: 12px;
+  color: var(--muted);
   pointer-events: none;
 }
 
 .search-field input {
   width: 100%;
   height: 100%;
-  padding: 0 32px 0 35px;
+  padding: 0 34px 0 36px;
   border: none;
   outline: none;
   background: transparent;
-  font-size: var(--fs-base);
 }
 
 .search-field input:placeholder-shown {
-  padding-right: 10px;
+  padding-right: 12px;
 }
 
 .search-field input::placeholder {
-  color: var(--text-3);
+  color: var(--muted);
 }
 
 .clear-search-btn {
   position: absolute;
-  right: 5px;
+  right: 6px;
   display: grid;
   place-items: center;
   width: 24px;
   height: 24px;
   border: none;
-  border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--text-2);
+  border-radius: 50%;
+  background: var(--control);
+  color: var(--muted);
 }
 
 .clear-search-btn .icon {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
 }
 
 .clear-search-btn:hover {
   color: var(--text);
-  background: var(--surface-3);
 }
 
 .thread-field {
-  width: 148px;
-  flex-shrink: 0;
+  flex: none;
+  width: 140px;
 }
 
 .thread-field select {
   width: 100%;
   height: 100%;
-  padding: 0 26px 0 31px;
+  padding: 0 28px 0 34px;
   border: none;
   outline: none;
   background: transparent;
-  font-size: var(--fs-sm);
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
@@ -451,29 +385,22 @@ button {
 .thread-icon,
 .thread-chevron {
   position: absolute;
-  color: var(--text-3);
+  color: var(--muted);
   pointer-events: none;
 }
 
 .thread-icon {
-  left: 10px;
-  width: 15px;
-  height: 15px;
+  left: 12px;
 }
 
 .thread-chevron {
-  right: 8px;
-  width: 15px;
-  height: 15px;
+  right: 10px;
 }
 
+/* Tab lọc dạng chip giống bộ lọc trong Facebook */
 .filter-tabs {
   display: flex;
-  gap: 2px;
-  padding: 3px;
-  border-radius: 10px;
-  background: var(--surface);
-  border: 1px solid var(--line);
+  gap: 6px;
 }
 
 .tab-btn {
@@ -481,39 +408,37 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 4px;
+  gap: 5px;
+  height: 32px;
+  padding: 0 6px;
   border: none;
-  border-radius: 7px;
+  border-radius: 16px;
   background: transparent;
-  color: var(--text-2);
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-medium);
-  letter-spacing: -0.01em;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
   white-space: nowrap;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition: background-color 0.15s, color 0.15s;
 }
 
 .tab-btn:hover {
-  color: var(--text);
+  background: var(--hover);
 }
 
 .tab-btn.active {
-  background: var(--surface-3);
-  color: var(--text);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .tab-count {
   min-width: 18px;
   padding: 0 5px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--text-3);
-  font-size: var(--fs-2xs);
-  font-weight: var(--fw-semibold);
-  line-height: 16px;
+  border-radius: 9px;
+  background: var(--control);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
@@ -526,20 +451,24 @@ button {
 /* ===== Danh sách tin nhắn ===== */
 .unsent-list {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   overflow-y: auto;
-  padding: 0 8px 12px;
+  padding: 12px;
+}
+
+.day-group {
+  flex: none;
+  padding: 14px 8px 6px;
 }
 
 .day-label {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  padding: 10px 8px 6px;
-  background: var(--bg);
-  color: var(--text-3);
-  font-size: var(--fs-2xs);
-  font-weight: var(--fw-semibold);
-  letter-spacing: 0.06em;
+  margin: 0 8px 4px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
@@ -548,22 +477,22 @@ button {
   display: flex;
   gap: 10px;
   padding: 10px 8px;
-  border-radius: var(--radius-md);
-  transition: background-color 0.15s ease;
+  border-radius: 8px;
+  transition: background-color 0.15s;
 }
 
 .msg-card:hover {
-  background: var(--surface);
+  background: var(--hover);
 }
 
 .msg-card + .msg-card::before {
   content: '';
   position: absolute;
   top: 0;
-  left: 54px;
+  left: 8px;
   right: 8px;
   height: 1px;
-  background: var(--line);
+  background: var(--border);
 }
 
 .msg-card:hover::before,
@@ -572,20 +501,19 @@ button {
 }
 
 .msg-avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
   color: #ffffff;
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-semibold);
-  letter-spacing: 0.01em;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .msg-card.is-self .msg-avatar {
-  font-size: var(--fs-2xs);
+  font-size: 11px;
 }
 
 .msg-main {
@@ -601,7 +529,6 @@ button {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding-right: 4px;
 }
 
 .msg-name {
@@ -609,29 +536,27 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--fs-base);
-  font-weight: var(--fw-semibold);
+  font-weight: 600;
 }
 
 .msg-role {
-  flex-shrink: 0;
+  flex: none;
   padding: 1px 6px;
-  border-radius: 999px;
-  font-size: var(--fs-2xs);
-  font-weight: var(--fw-medium);
-  line-height: 16px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .msg-role.self {
-  background: var(--self-soft);
-  color: var(--self-text);
+  background: var(--accent);
+  color: #ffffff;
 }
 
 .msg-time {
   margin-left: auto;
-  flex-shrink: 0;
-  color: var(--text-3);
-  font-size: var(--fs-xs);
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -642,8 +567,9 @@ button {
   align-items: center;
   gap: 5px;
   min-width: 0;
-  color: var(--text-3);
-  font-size: var(--fs-xs);
+  margin-top: -2px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .msg-thread .icon,
@@ -659,34 +585,24 @@ button {
   white-space: nowrap;
 }
 
-.msg-thread {
-  margin-top: -2px;
-  color: var(--text-2);
-}
-
-.msg-anchor {
-  margin-top: 2px;
-}
-
+/* Bong bóng chat giống Messenger: xám cho người khác, xanh cho bạn */
 .msg-bubble {
   align-self: flex-start;
   max-width: 100%;
   margin-top: 2px;
-  padding: 8px 12px;
-  border-radius: var(--radius-lg);
-  border-top-left-radius: 6px;
+  padding: 7px 12px;
+  border-radius: 18px;
   background: var(--bubble-other);
-  color: var(--bubble-other-text);
-  font-size: var(--fs-base);
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.35;
   white-space: pre-wrap;
   word-break: break-word;
   user-select: text;
 }
 
 .msg-card.is-self .msg-bubble {
-  background: var(--bubble-self);
-  color: var(--bubble-self-text);
+  background: var(--accent);
+  color: #ffffff;
 }
 
 .msg-media {
@@ -697,13 +613,12 @@ button {
 }
 
 .media-thumb {
-  position: relative;
   width: 92px;
   height: 92px;
   padding: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
   overflow: hidden;
   cursor: zoom-in;
 }
@@ -719,7 +634,7 @@ button {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: transform 0.2s ease;
+  transition: transform 0.2s;
 }
 
 .media-thumb:only-child img {
@@ -728,10 +643,10 @@ button {
 }
 
 .media-thumb:hover img {
-  transform: scale(1.05);
+  transform: scale(1.04);
 }
 
-/* Nút thao tác: hiện khi rê chuột vào thẻ */
+/* Nút thao tác: hiện khi rê chuột vào tin nhắn */
 .msg-actions {
   position: absolute;
   top: 6px;
@@ -739,20 +654,18 @@ button {
   display: flex;
   gap: 2px;
   padding: 2px;
-  border: 1px solid var(--line-strong);
-  border-radius: 9px;
-  background: var(--surface-2);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
   opacity: 0;
-  transform: translateY(-2px);
   pointer-events: none;
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  transition: opacity 0.15s;
 }
 
 .msg-card:hover .msg-actions,
 .msg-card:focus-within .msg-actions {
   opacity: 1;
-  transform: translateY(0);
   pointer-events: auto;
 }
 
@@ -760,23 +673,23 @@ button {
   display: grid;
   place-items: center;
   width: 28px;
-  height: 26px;
+  height: 28px;
   border: none;
-  border-radius: 7px;
+  border-radius: 6px;
   background: transparent;
-  color: var(--text-2);
+  color: var(--muted);
   text-decoration: none;
   cursor: pointer;
 }
 
 .msg-action:hover {
-  background: var(--surface-3);
+  background: var(--hover);
   color: var(--text);
 }
 
 .msg-action.danger:hover {
-  background: var(--accent-soft);
-  color: var(--accent-text);
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .msg-action.done {
@@ -786,7 +699,7 @@ button {
 .msg-card.removing {
   opacity: 0;
   transform: translateX(12px);
-  transition: opacity 0.18s ease, transform 0.18s ease;
+  transition: opacity 0.18s, transform 0.18s;
 }
 
 /* ===== Trạng thái trống ===== */
@@ -794,8 +707,8 @@ button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 64px 32px 24px;
+  gap: 4px;
+  padding: 32px 28px;
   text-align: center;
 }
 
@@ -805,28 +718,25 @@ button {
   width: 56px;
   height: 56px;
   margin-bottom: 8px;
-  border-radius: 18px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  color: var(--text-3);
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .empty-icon .icon {
   width: 26px;
   height: 26px;
-  stroke-width: 1.6;
 }
 
 .empty-title {
-  font-size: 14px;
-  font-weight: var(--fw-semibold);
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .empty-desc {
-  max-width: 270px;
-  color: var(--text-2);
-  font-size: var(--fs-sm);
-  line-height: 1.55;
+  max-width: 280px;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 /* ===== Footer ===== */
@@ -834,11 +744,10 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 9px 16px;
-  border-top: 1px solid var(--line);
-  color: var(--text-3);
-  font-size: var(--fs-xs);
+  gap: 12px;
+  padding: 8px 16px 10px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .version-tag {
@@ -850,30 +759,32 @@ button {
   position: absolute;
   left: 16px;
   right: 16px;
-  bottom: 46px;
+  bottom: 44px;
   z-index: 50;
   display: flex;
   align-items: center;
   gap: 8px;
   width: fit-content;
   margin: 0 auto;
-  padding: 9px 14px 9px 11px;
-  border: 1px solid var(--line-strong);
-  border-radius: 12px;
-  background: var(--surface-3);
-  color: var(--text);
-  box-shadow: var(--shadow-pop);
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-medium);
-  animation: toastIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  padding: 8px 14px 8px 12px;
+  border-radius: 8px;
+  background: var(--toast-bg);
+  color: #ffffff;
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  animation: toastIn 0.2s ease-out;
 }
 
 .status-icon {
-  color: var(--success);
+  color: #45bd62;
+}
+
+.status-toast.error {
+  background: var(--danger);
 }
 
 .status-toast.error .status-icon {
-  color: var(--accent-text);
+  color: #ffffff;
 }
 
 /* ===== Lightbox ===== */
@@ -888,16 +799,14 @@ button {
   gap: 14px;
   padding: 48px 20px 20px;
   background: var(--overlay);
-  backdrop-filter: blur(8px);
   animation: fadeIn 0.18s ease-out;
 }
 
 #lightbox-img {
   max-width: 100%;
   max-height: 430px;
-  border-radius: var(--radius-md);
+  border-radius: 8px;
   object-fit: contain;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
 }
 
 .lightbox-close {
@@ -906,34 +815,33 @@ button {
   right: 12px;
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   border: none;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.15);
   color: #ffffff;
 }
 
 .lightbox-close:hover {
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .lightbox-download {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   height: 36px;
   padding: 0 16px;
-  border-radius: 999px;
-  background: #ffffff;
-  color: #15171c;
-  font-size: var(--fs-base);
-  font-weight: var(--fw-semibold);
+  border-radius: 8px;
+  background: #0866ff;
+  color: #ffffff;
+  font-weight: 600;
   text-decoration: none;
 }
 
 .lightbox-download:hover {
-  background: #e9ebef;
+  background: #0757d9;
 }
 
 /* ===== Animation ===== */

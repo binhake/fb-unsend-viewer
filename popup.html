@@ -59,7 +59,7 @@
     </header>
 
     <!-- ===== Tìm kiếm & bộ lọc ===== -->
-    <section class="controls">
+    <section class="card controls">
       <div class="search-row">
         <label class="search-field">
           <svg class="icon search-icon"><use href="#i-search"/></svg>
@@ -123,8 +123,12 @@
   </div>
 
   <!-- ===== Templates ===== -->
-  <template id="dayLabelTemplate">
-    <div class="day-label"></div>
+  <!-- Mỗi ngày là một thẻ riêng: tiêu đề ngày + các tin nhắn bên trong -->
+  <template id="dayGroupTemplate">
+    <section class="card day-group">
+      <h2 class="day-label"></h2>
+      <div class="day-items"></div>
+    </section>
   </template>
 
   <template id="messageCardTemplate">
@@ -168,7 +172,7 @@
   </template>
 
   <template id="emptyStateTemplate">
-    <div class="empty-state">
+    <div class="card empty-state">
       <div class="empty-icon">
         <svg class="icon"><use href="#i-inbox"/></svg>
       </div>

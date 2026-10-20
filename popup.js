@@ -10,16 +10,9 @@ const STATUS_HIDE_MS = 3600;
 const COPY_FEEDBACK_MS = 1200;
 const CARD_REMOVE_ANIM_MS = 180;
 
-const AVATAR_GRADIENTS = [
-  'linear-gradient(135deg, #fb7185, #e11d48)',
-  'linear-gradient(135deg, #a78bfa, #7c3aed)',
-  'linear-gradient(135deg, #38bdf8, #0284c7)',
-  'linear-gradient(135deg, #34d399, #059669)',
-  'linear-gradient(135deg, #fbbf24, #d97706)',
-  'linear-gradient(135deg, #f472b6, #db2777)',
-  'linear-gradient(135deg, #2dd4bf, #0d9488)'
-];
-const SELF_AVATAR_GRADIENT = 'linear-gradient(135deg, #3d7cff, #7b5cff)';
+// Màu nền avatar chữ cái — tông phẳng giống avatar mặc định của Facebook
+const AVATAR_COLORS = ['#e4405f', '#8b5cf6', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899', '#14b8a6'];
+const SELF_AVATAR_COLOR = '#0866ff';
 
 const WEEKDAY_NAMES = ['Chủ nhật', 'Thứ hai', 'Thứ ba', 'Thứ tư', 'Thứ năm', 'Thứ sáu', 'Thứ bảy'];
 
@@ -120,13 +113,13 @@ function getRecordTime(item) {
 }
 
 // ── Avatar ──
-function getAvatarGradient(name) {
+function getAvatarColor(name) {
   const str = String(name || 'F');
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     hash = str.charCodeAt(i) + ((hash << 5) - hash);
   }
-  return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length];
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
 function getInitials(name) {
@@ -348,7 +341,7 @@ function buildMessageCard(item, ts) {
 
   // ── Người gửi ──
   const avatar = card.querySelector('.msg-avatar');
-  avatar.style.background = isSelf ? SELF_AVATAR_GRADIENT : getAvatarGradient(person);
+  avatar.style.background = isSelf ? SELF_AVATAR_COLOR : getAvatarColor(person);
   avatar.textContent = isSelf ? 'Bạn' : getInitials(person);
 
   const nameEl = card.querySelector('.msg-name');
@@ -450,18 +443,21 @@ function renderList() {
     return;
   }
 
+  // Gom tin theo ngày: mỗi ngày một thẻ, tin nhắn nằm trong .day-items
   const fragment = document.createDocumentFragment();
   let lastDayKey = '';
+  let dayItems = null;
   visibleItems.forEach(item => {
     const ts = getRecordTime(item);
     const dayKey = getDayKey(ts);
     if (dayKey !== lastDayKey) {
-      const dayLabel = cloneTemplate('dayLabelTemplate');
-      dayLabel.textContent = formatDayLabel(ts);
-      fragment.appendChild(dayLabel);
+      const dayGroup = cloneTemplate('dayGroupTemplate');
+      dayGroup.querySelector('.day-label').textContent = formatDayLabel(ts);
+      dayItems = dayGroup.querySelector('.day-items');
+      fragment.appendChild(dayGroup);
       lastDayKey = dayKey;
     }
-    fragment.appendChild(buildMessageCard(item, ts));
+    dayItems.appendChild(buildMessageCard(item, ts));
   });
   dom.unsentList.appendChild(fragment);
 }
