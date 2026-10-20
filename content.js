@@ -133,18 +133,13 @@
     if (currentUserId && rec.senderId) {
       return String(rec.senderId) === String(currentUserId);
     }
+    if (typeof rec.isSelf === 'boolean') return rec.isSelf;
     if (rec.unsendNotice) {
       if (isSelfUnsendNotice(rec.unsendNotice)) return true;
       const np = extractNameFromNotice(rec.unsendNotice);
       if (np && !isSelfKeyword(np)) return false;
     }
     if (isSelfKeyword(rec.personName)) return true;
-    if (currentUserFullName && rec.personName) {
-      if (rec.personName.trim().toLowerCase() === currentUserFullName.toLowerCase()) {
-        return true;
-      }
-    }
-    if (typeof rec.isSelf === 'boolean') return rec.isSelf;
     return false;
   }
 
@@ -681,10 +676,6 @@
     setTimeout(() => scanChatMessagesInDom(record), 60);
   }
 
-  // ============================================================================
-  // 2. QUÉT CHÍNH XÁC CÁC DÒNG TIN NHẮN TRONG KHUNG CHAT (KHÔNG QUÉT NEWS FEED)
-  // ============================================================================
-
   const ARIA_CONVERSATION_PREFIX_REGEX =
     /^(?:Cuộc trò chuyện với|Đoạn chat với|Tin nhắn trong cuộc trò chuyện với|Conversation with|Chat with)\s+/i;
 
@@ -703,7 +694,6 @@
           'div[role="dialog"], div[data-pagelet*="ChatTab"], div[role="main"]'
         );
         if (chatContainer) {
-          // 1. Chỉ lấy từ aria-label nếu thực sự có tiền tố "Cuộc trò chuyện với..." (tránh lấy nhầm aria-label="Cuộc trò chuyện" của div[role="main"] trên /messages/t/...)
           const ariaElements = [
             chatContainer,
             ...Array.from(
@@ -722,7 +712,6 @@
             }
           }
 
-          // 2. Kiểm tra thẻ tiêu đề hiển thị thực tế ở thanh header phía trên cùng của khung chat
           const containerRect = chatContainer.getBoundingClientRect();
           const headerSelectors = [
             'h1',
@@ -1120,9 +1109,6 @@
     if (allowSelfAlias && isCurrentUserName(a) && isCurrentUserName(b)) {
       return true;
     }
-    if (!allowSelfAlias && (isCurrentUserName(a) || isCurrentUserName(b))) {
-      return false;
-    }
     if (a.length >= 2 && b.length >= 2 && !isSelfKeyword(a) && !isSelfKeyword(b)) {
       if (a.includes(b) || b.includes(a)) {
         return true;
@@ -1224,9 +1210,6 @@
 
           const uAnchor = (u.anchorAboveText || '').trim();
           if (anchorAboveText && uAnchor && anchorAboveText !== uAnchor) {
-            return false;
-          }
-          if (hasFiberOnAllRows && (!anchorAboveText || !uAnchor)) {
             return false;
           }
 
@@ -1361,7 +1344,10 @@
           safePrev?.messageId ||
           `dom_${getMonotonicTimestamp()}_${index}_${Math.random().toString(36).slice(2, 6)}`;
 
-        if (safePrev && safePrev.messageId && fiberMsgId && safePrev.messageId !== fiberMsgId) {
+        const idUpgraded = Boolean(
+          safePrev && safePrev.messageId && fiberMsgId && safePrev.messageId !== fiberMsgId
+        );
+        if (idUpgraded) {
           currentActiveIds.add(safePrev.messageId);
           messagesById.delete(safePrev.messageId);
           const oldIdx = recentMessagesList.findIndex((m) => m.messageId === safePrev.messageId);
@@ -1426,12 +1412,15 @@
           currentActiveIds.add(safePrev.messageId);
         }
 
+        const textUpgraded = Boolean(
+          safePrev && record.text && record.text !== (safePrev.text || '')
+        );
         const attachmentsUpgraded =
           safePrev &&
           record.attachments.length > 0 &&
           JSON.stringify(record.attachments) !== JSON.stringify(safePrev.attachments || []);
 
-        if (!safePrev || attachmentsUpgraded) {
+        if (!safePrev || idUpgraded || textUpgraded || attachmentsUpgraded) {
           handleCapturedMessage(record);
         }
       }
@@ -1578,10 +1567,7 @@
                 `div[data-scope="messages_table"][data-fb-unsend-matched-id="${specificRecord.messageId}"]`
               )
           );
-          if (
-            !alreadyUsedOnDom &&
-            (!fiberId || !specificRecord.messageId || specificRecord.messageId === fiberId)
-          ) {
+          if (!alreadyUsedOnDom) {
             restored = specificRecord;
           }
         }
