@@ -6,12 +6,14 @@
   --fbu-text: #d42f32;
   --fbu-border: rgba(229, 56, 59, 0.5);
   --fbu-tint: rgba(229, 56, 59, 0.06);
+  --fbu-label-color: rgba(0, 0, 0, 0.65);
 }
 
 .__fb-dark-mode {
   --fbu-text: #ff8a8c;
   --fbu-border: rgba(255, 77, 79, 0.55);
   --fbu-tint: rgba(255, 77, 79, 0.09);
+  --fbu-label-color: rgba(255, 255, 255, 0.78);
 }
 
 /* ===== Bong bóng tin nhắn đã khôi phục ===== */
@@ -52,6 +54,60 @@
 .fb-unsend-restored-img:hover {
   transform: scale(1.03);
   filter: brightness(1.06);
+}
+
+.fb-unsend-restored-audio {
+  width: 240px;
+  max-width: 100%;
+  height: 36px;
+  border-radius: 18px;
+  outline: none;
+}
+
+.fb-unsend-restored-video {
+  max-width: 240px;
+  max-height: 220px;
+  border-radius: 12px;
+  border: 1px solid var(--fbu-border);
+  background: #000;
+  outline: none;
+}
+
+/* ===== Khối tin nhắn khôi phục trong Đoạn chat Cộng đồng (khi FB ẩn hẳn dòng gỡ) ===== */
+.fb-unsend-community-restored-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 14px 4px 44px;
+}
+
+.fb-unsend-community-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  max-width: 82%;
+}
+
+.fb-unsend-community-item-self {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.fb-unsend-community-bubble {
+  padding: 8px 12px;
+  border-radius: 18px;
+  font-size: 14px;
+  line-height: 1.38;
+  color: var(--fbu-label-color);
+  word-break: break-word;
+}
+
+.fb-unsend-community-label {
+  font-style: italic;
+  color: var(--fbu-label-color) !important;
+  font-size: 13px;
 }
 
 /* ===== Icon dùng chung ===== */
@@ -204,6 +260,7 @@
 
 .fb-unsend-toast-thumbs {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin: 8px 0 0 44px;
 }
@@ -220,6 +277,22 @@
 
 .fb-unsend-toast-thumb:hover {
   transform: scale(1.05);
+}
+
+.fb-unsend-toast-audio {
+  width: 100%;
+  height: 34px;
+  border-radius: 17px;
+  outline: none;
+}
+
+.fb-unsend-toast-video {
+  max-width: 100%;
+  max-height: 140px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #000;
+  outline: none;
 }
 
 .fb-unsend-toast-progress {

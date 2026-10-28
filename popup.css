@@ -702,6 +702,23 @@ button {
   transform: scale(1.04);
 }
 
+.media-audio {
+  width: 100%;
+  max-width: 280px;
+  height: 36px;
+  border-radius: 18px;
+  outline: none;
+}
+
+.media-video {
+  max-width: 240px;
+  max-height: 180px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #000;
+  outline: none;
+}
+
 /* Nút thao tác: hiện khi rê chuột vào tin nhắn */
 .msg-actions {
   position: absolute;

@@ -196,10 +196,46 @@ function showStatus(message, isError = false) {
   }, STATUS_HIDE_MS);
 }
 
+function isAttachmentFilenameText(text) {
+  if (!text || typeof text !== 'string') return false;
+  return /^(audioclip|videoclip|voiceclip|audio_clip|video_clip|image|video|audio|file|sticker|gif|attachment)[_-][0-9a-f_-]+(\.[a-z0-9]+)?$/i.test(
+    text.trim()
+  );
+}
+
+function getAttachmentMediaType(url) {
+  if (!url || typeof url !== 'string') return 'image';
+  const clean = url.trim();
+  if (
+    clean.startsWith('data:audio/') ||
+    /(\.ogg|\.mp3|\.wav|\.m4a|\.aac|\.opus|\.flac)(\?|#|$)/i.test(clean) ||
+    /(audioclip|audio_clip|voice_clip|\/t59\.3654-21\/|mime=audio)/i.test(clean)
+  ) {
+    return 'audio';
+  }
+  if (
+    clean.startsWith('data:video/') ||
+    /(\.mp4|\.webm|\.mov|\.m4v|\.ogv)(\?|#|$)/i.test(clean) ||
+    /(videoclip|video_clip|\/t42\.|https?:\/\/video[a-z0-9.-]*\.fbcdn\.net|mime=video)/i.test(clean)
+  ) {
+    return 'video';
+  }
+  return 'image';
+}
+
 function applyDownloadLink(linkEl, url) {
+  const mediaType = getAttachmentMediaType(url);
+  const ext = mediaType === 'audio' ? 'ogg' : mediaType === 'video' ? 'mp4' : 'webp';
   linkEl.href = url;
-  linkEl.download = `fb-unsent-${Date.now()}.webp`;
-  // Link ảnh ngoài (CDN Facebook) không tải được bằng thuộc tính download → mở tab mới thay vì điều hướng popup
+  linkEl.download = `fb-unsent-${Date.now()}.${ext}`;
+  if (mediaType === 'audio') {
+    linkEl.title = 'Tải âm thanh về máy';
+  } else if (mediaType === 'video') {
+    linkEl.title = 'Tải video về máy';
+  } else {
+    linkEl.title = 'Tải ảnh về máy';
+  }
+  // Link ngoài (CDN Facebook) không tải được bằng thuộc tính download → mở tab mới thay vì điều hướng popup
   if (!url.startsWith('data:')) {
     linkEl.target = '_blank';
     linkEl.rel = 'noopener noreferrer';
@@ -337,9 +373,35 @@ function buildMediaThumb(url) {
   return thumb;
 }
 
+function buildMediaItem(url) {
+  const mediaType = getAttachmentMediaType(url);
+  if (mediaType === 'audio') {
+    const audio = document.createElement('audio');
+    audio.controls = true;
+    audio.preload = 'metadata';
+    audio.src = url;
+    audio.className = 'media-audio';
+    return audio;
+  }
+  if (mediaType === 'video') {
+    const video = document.createElement('video');
+    video.controls = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
+    video.src = url;
+    video.className = 'media-video';
+    return video;
+  }
+  return buildMediaThumb(url);
+}
+
 function buildMessageCard(item, ts) {
   const { person, thread, isSelf } = parseRecordNames(item);
   const attachments = getRecordAttachments(item);
+  const displayText =
+    item.text && !(isAttachmentFilenameText(item.text) && attachments.length > 0)
+      ? item.text
+      : '';
   const card = cloneTemplate('messageCardTemplate');
   card.classList.toggle('is-self', isSelf);
 
@@ -380,24 +442,24 @@ function buildMessageCard(item, ts) {
     anchorEl.hidden = false;
   }
 
-  if (item.text) {
+  if (displayText) {
     const bubbleEl = card.querySelector('.msg-bubble');
-    bubbleEl.textContent = item.text;
+    bubbleEl.textContent = displayText;
     bubbleEl.hidden = false;
   }
 
   if (attachments.length > 0) {
     const mediaEl = card.querySelector('.msg-media');
-    attachments.forEach(url => mediaEl.appendChild(buildMediaThumb(url)));
+    attachments.forEach(url => mediaEl.appendChild(buildMediaItem(url)));
     mediaEl.hidden = false;
   }
 
   // ── Thao tác ──
   const copyBtn = card.querySelector('[data-action="copy"]');
-  if (item.text) {
+  if (displayText) {
     copyBtn.hidden = false;
     copyBtn.addEventListener('click', function () {
-      navigator.clipboard.writeText(item.text).then(function () {
+      navigator.clipboard.writeText(displayText).then(function () {
         const iconUse = copyBtn.querySelector('use');
         iconUse.setAttribute('href', '#i-check');
         copyBtn.classList.add('done');

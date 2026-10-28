@@ -4,10 +4,61 @@
   if (window.__FB_UNSEND_INJECTED__) return;
   window.__FB_UNSEND_INJECTED__ = true;
 
+  const MAX_LOG_ENTRIES = 600;
+  const mainLogBuffer = [];
+
+  function serializeForLog(val, depth = 0) {
+    if (val === null || val === undefined) return val;
+    if (typeof val === 'string') {
+      if (val.length > 300) {
+        return `${val.slice(0, 140)}... [len=${val.length}]`;
+      }
+      return unvaultString(val);
+    }
+    if (typeof val === 'number' || typeof val === 'boolean') return val;
+    if (typeof val === 'function') return `[Function: ${val.name || 'anonymous'}]`;
+    if (val instanceof Error) return { message: val.message, stack: val.stack };
+    if (typeof Node !== 'undefined' && val instanceof Node) {
+      return `[DOMNode: ${val.nodeName}]`;
+    }
+    if (depth >= 3) {
+      return Array.isArray(val) ? `[Array(${val.length})]` : '[Object]';
+    }
+    if (Array.isArray(val)) {
+      return val.slice(0, 25).map((item) => serializeForLog(item, depth + 1));
+    }
+    if (typeof val === 'object') {
+      const out = {};
+      const keys = Object.keys(val).slice(0, 25);
+      for (const k of keys) {
+        try {
+          out[k] = serializeForLog(val[k], depth + 1);
+        } catch (_) {}
+      }
+      return out;
+    }
+    return String(val);
+  }
+
+  function dlog(tag, _color, ...args) {
+    try {
+      mainLogBuffer.push({
+        t: new Date().toISOString(),
+        ms: Date.now(),
+        tag,
+        data: args.map((a) => serializeForLog(a, 0))
+      });
+      if (mainLogBuffer.length > MAX_LOG_ENTRIES) {
+        mainLogBuffer.splice(0, mainLogBuffer.length - MAX_LOG_ENTRIES);
+      }
+    } catch (_) {}
+  }
+
   const PAGE_LOAD_TIME = Date.now();
   const INITIAL_SYNC_GRACE_MS = 6000;
 
   const capturedMessages = new Map();
+  const pendingVaultMessages = new Map();
   const aliasIdMap = new Map();
   const processedNodes = new WeakSet();
   const vaultMap = new Map();
@@ -16,6 +67,18 @@
   const seenE2EETexts = new Map();
   let lastE2EEMessageId = null;
   let mawUnvaultFn = null;
+
+  dlog('INIT', '#00a8ff', 'injected.js đã khởi tạo trong MAIN world tại', location.href);
+
+  window.__FB_UNSEND_MAIN_STATE__ = {
+    mainLogBuffer,
+    capturedMessages,
+    pendingVaultMessages,
+    aliasIdMap,
+    vaultMap,
+    contactNameMap,
+    threadNameMap
+  };
 
   const origTextDecoderDecode = TextDecoder.prototype.decode;
   const utf8Decoder = new TextDecoder('utf-8', { fatal: false });
@@ -95,26 +158,54 @@
     /^Hoạt động .* trước$/i
   ];
 
-  function recordVaultMapping(vaultedToken, plainText) {
-    if (
-      typeof vaultedToken === 'string' &&
-      typeof plainText === 'string' &&
-      vaultedToken !== plainText &&
-      plainText.length > 0
-    ) {
-      vaultMap.set(vaultedToken, plainText);
+  function isVaultToken(str) {
+    return typeof str === 'string' && (str.startsWith('@@vault') || str.startsWith('vault:'));
+  }
+
+  function recordVaultMapping(strA, strB) {
+    if (typeof strA !== 'string' || typeof strB !== 'string' || strA === strB) return;
+
+    let vaultedToken = '';
+    let plainText = '';
+    if (isVaultToken(strA) && !isVaultToken(strB) && strB.length > 0) {
+      vaultedToken = strA;
+      plainText = strB;
+    } else if (isVaultToken(strB) && !isVaultToken(strA) && strA.length > 0) {
+      vaultedToken = strB;
+      plainText = strA;
+    } else {
+      return;
+    }
+
+    vaultMap.set(vaultedToken, plainText);
+
+    if (pendingVaultMessages.has(vaultedToken)) {
+      const pendingList = pendingVaultMessages.get(vaultedToken);
+      pendingVaultMessages.delete(vaultedToken);
+      for (const pendingMsg of pendingList) {
+        dlog('VAULT-RESOLVED', '#00cec9', 'Đã giải mã tin nhắn chờ từ MAWVault:', {
+          vaultedToken,
+          plainText,
+          messageId: pendingMsg.messageId
+        });
+        registerCapturedMessage({
+          ...pendingMsg,
+          text: plainText
+        });
+      }
     }
   }
 
   function unvaultString(str) {
     if (!str || typeof str !== 'string') return str;
+    if (!isVaultToken(str)) return str;
     if (vaultMap.has(str)) {
       return vaultMap.get(str);
     }
-    if (mawUnvaultFn && (str.startsWith('@@vault') || str.startsWith('vault:'))) {
+    if (mawUnvaultFn) {
       try {
         const res = mawUnvaultFn(str);
-        if (typeof res === 'string' && res !== str) {
+        if (typeof res === 'string' && res !== str && !isVaultToken(res)) {
           recordVaultMapping(str, res);
           return res;
         }
@@ -128,6 +219,27 @@
     const realStr = unvaultString(str).trim();
     if (realStr.length === 0 || realStr.length > 120) return false;
     return UNSEND_PATTERNS.some((regex) => regex.test(realStr));
+  }
+
+  function extractNameFromNoticeText(noticeText) {
+    if (!noticeText || typeof noticeText !== 'string') return '';
+    const realStr = unvaultString(noticeText).trim();
+    const beforeColon = realStr.split(':')[0] || realStr;
+    const cleaned = beforeColon
+      .replace(
+        /\s*(đã xóa một tin nhắn|đã xoá một tin nhắn|đã thu hồi một tin nhắn|đã gỡ một tin nhắn|unsent a message|deleted a message|removed a message).*$/i,
+        ''
+      )
+      .trim();
+    if (
+      cleaned &&
+      cleaned.length >= 1 &&
+      cleaned.length < 60 &&
+      !/^(bạn|you|tin nhắn|message)$/i.test(cleaned)
+    ) {
+      return cleaned;
+    }
+    return '';
   }
 
   function isSystemNoticeText(str) {
@@ -172,7 +284,9 @@
       trimmed.startsWith('blob:') ||
       trimmed.startsWith('https://www.facebook.com/selfxss') ||
       trimmed.startsWith('/messaging/lightspeed/') ||
-      /^(image|video|audio|file|sticker|gif|attachment)-[0-9a-f_-]+(\.[a-z0-9]+)?$/i.test(trimmed)
+      /^(audioclip|videoclip|voiceclip|audio_clip|video_clip|image|video|audio|file|sticker|gif|attachment)[_-][0-9a-f_-]+(\.[a-z0-9]+)?$/i.test(
+        trimmed
+      )
     ) {
       return true;
     }
@@ -209,7 +323,11 @@
   function extractMediaUrl(str) {
     if (!str || typeof str !== 'string') return null;
     const trimmed = unvaultString(str).trim();
-    if (/^https?:\/\/(scontent|video|cdn\.fbsbx\.com|lookaside)/i.test(trimmed)) {
+    if (
+      /^https?:\/\/([a-z0-9-]+\.)*(scontent[a-z0-9-]*|video[a-z0-9-]*|fbcdn\.net|cdn\.fbsbx\.com|lookaside)/i.test(
+        trimmed
+      )
+    ) {
       return trimmed;
     }
     if (trimmed.startsWith('/messaging/lightspeed/media_fallback/')) {
@@ -304,17 +422,30 @@
 
     const unvaultedText = typeof text === 'string' ? unvaultString(text) : '';
 
+    if (unvaultedText && isVaultToken(unvaultedText)) {
+      const list = pendingVaultMessages.get(unvaultedText) || [];
+      list.push({
+        ...msgData,
+        messageId
+      });
+      pendingVaultMessages.set(unvaultedText, list);
+      dlog('VAULT-PENDING', '#fdcb6e', 'Tin nhắn đang giữ token @@vault, đưa vào hàng đợi giải mã:', {
+        messageId,
+        vaultToken: unvaultedText,
+        source
+      });
+      return;
+    }
+
     if (unvaultedText && isUnsendNoticeText(unvaultedText)) {
-      if (capturedMessages.has(messageId)) {
-        triggerMessageUnsent(messageId, {
-          senderId,
-          threadId,
-          senderName,
-          threadName,
-          unsendNotice: unvaultedText,
-          source
-        });
-      }
+      triggerMessageUnsent(messageId, {
+        senderId,
+        threadId,
+        senderName,
+        threadName,
+        unsendNotice: unvaultedText,
+        source
+      });
       return;
     }
 
@@ -325,7 +456,7 @@
         ? unvaultedText.trim()
         : '';
     const cleanAttachments = Array.isArray(attachments)
-      ? attachments.map(unvaultString).filter(Boolean)
+      ? attachments.map(unvaultString).filter((u) => u && !isVaultToken(u))
       : [];
 
     const existing = capturedMessages.get(messageId);
@@ -379,6 +510,13 @@
     capturedMessages.set(messageId, updatedRecord);
 
     if (isActuallyNew) {
+      dlog('CAPTURED', '#4cd137', {
+        messageId,
+        text: finalText,
+        personName: updatedRecord.personName,
+        threadName: updatedRecord.threadName,
+        source: updatedRecord.source
+      });
       emitToContentScript('FB_MSG_CAPTURED', updatedRecord);
     }
   }
@@ -388,17 +526,51 @@
     if (!messageId) return;
 
     const existing = capturedMessages.get(messageId);
-    if (!existing || existing.isUnsent) return;
-    if (!existing.text && (!existing.attachments || existing.attachments.length === 0)) return;
+    const noticeSenderName = extractNameFromNoticeText(extraInfo.unsendNotice || '');
 
-    const finalSenderId = extraInfo.senderId || existing.senderId || '';
-    const finalThreadId = extraInfo.threadId || existing.threadId || '';
+    const finalSenderId = extraInfo.senderId || existing?.senderId || '';
+    const finalThreadId = extraInfo.threadId || existing?.threadId || '';
     const resolvedNames = resolveContactAndThreadName(
       finalSenderId,
       finalThreadId,
-      extraInfo.senderName || existing.personName || '',
-      extraInfo.threadName || existing.threadName || ''
+      extraInfo.senderName || noticeSenderName || existing?.personName || '',
+      extraInfo.threadName || existing?.threadName || ''
     );
+
+    if (existing?.isUnsent) {
+      const hasNewNotice = Boolean(extraInfo.unsendNotice && !existing.unsendNotice);
+      const hasNewPerson = Boolean(resolvedNames.personName && !existing.personName);
+      const hasNewThread = Boolean(resolvedNames.threadName && !existing.threadName);
+      const hasNewSenderId = Boolean(finalSenderId && !existing.senderId);
+      const hasNewThreadId = Boolean(finalThreadId && !existing.threadId);
+      if (!hasNewNotice && !hasNewPerson && !hasNewThread && !hasNewSenderId && !hasNewThreadId) {
+        return;
+      }
+    }
+
+    if (!existing || (!existing.text && (!existing.attachments || existing.attachments.length === 0))) {
+      dlog('UNSENT-SIGNAL-ONLY', '#fbc531', 'Phát hiện lệnh gỡ nhưng MAIN chưa có text, chuyển tín hiệu sang CONTENT:', {
+        rawMessageId,
+        resolvedId: messageId,
+        extraInfo,
+        resolvedNames
+      });
+      emitToContentScript('FB_MSG_UNSENT', {
+        messageId,
+        rawMessageId: String(rawMessageId || ''),
+        senderId: finalSenderId,
+        threadId: finalThreadId,
+        senderName: resolvedNames.senderName || '',
+        personName: resolvedNames.personName || '',
+        threadName: resolvedNames.threadName || '',
+        unsendNotice: extraInfo.unsendNotice || '',
+        unsentAt: existing?.unsentAt || Date.now(),
+        source: extraInfo.source || 'internal',
+        isUnsent: true,
+        isSignalOnly: true
+      });
+      return;
+    }
 
     const record = {
       ...existing,
@@ -408,13 +580,14 @@
       personName: resolvedNames.personName || existing.personName || '',
       threadName: resolvedNames.threadName || existing.threadName || '',
       unsendNotice: extraInfo.unsendNotice || existing.unsendNotice || '',
-      unsentAt: Date.now(),
+      unsentAt: existing.unsentAt || Date.now(),
       source: extraInfo.source || existing.source || 'internal',
       isUnsent: true
     };
 
     capturedMessages.set(messageId, record);
 
+    dlog('UNSENT-HIT', '#e84118', 'Bắt được sự kiện gỡ tin nhắn từ MAIN world:', record);
     emitToContentScript('FB_MSG_UNSENT', record);
   }
 
@@ -428,16 +601,6 @@
         const trimmed = result.trim();
         if (trimmed.length > 0) {
           if (isUnsendNoticeText(trimmed)) {
-            if (Date.now() - PAGE_LOAD_TIME > INITIAL_SYNC_GRACE_MS && lastE2EEMessageId) {
-              const targetId = lastE2EEMessageId;
-              lastE2EEMessageId = null;
-              queueMicrotask(() => {
-                triggerMessageUnsent(targetId, {
-                  unsendNotice: trimmed,
-                  source: 'MAWVault-E2EE'
-                });
-              });
-            }
             return result;
           }
 
@@ -447,29 +610,29 @@
               const now = Date.now();
               if (now - PAGE_LOAD_TIME <= INITIAL_SYNC_GRACE_MS) {
                 if (!seenE2EETexts.has(trimmed)) {
-                  seenE2EETexts.set(trimmed, `e2ee_init_${seenE2EETexts.size}`);
+                  seenE2EETexts.set(trimmed, { id: `e2ee_init_${seenE2EETexts.size}`, time: now });
                 }
-              } else if (!seenE2EETexts.has(trimmed)) {
-                const e2eeMsgId = `e2ee_${now}_${Math.random().toString(36).slice(2, 6)}`;
-                seenE2EETexts.set(trimmed, e2eeMsgId);
-                lastE2EEMessageId = e2eeMsgId;
-
-                queueMicrotask(() => {
-                  registerCapturedMessage({
-                    messageId: e2eeMsgId,
-                    altIds: [],
-                    text: trimmed,
-                    senderId: '',
-                    threadId: '',
-                    attachments: [],
-                    timestamp: now,
-                    source: 'MAWVault-E2EE'
-                  });
-                });
               } else {
-                const existingId = seenE2EETexts.get(trimmed);
-                if (existingId && capturedMessages.has(existingId)) {
-                  lastE2EEMessageId = existingId;
+                const prevEntry = seenE2EETexts.get(trimmed);
+                if (!prevEntry || now - prevEntry.time > 1500) {
+                  const e2eeMsgId = `e2ee_${now}_${Math.random().toString(36).slice(2, 6)}`;
+                  seenE2EETexts.set(trimmed, { id: e2eeMsgId, time: now });
+                  lastE2EEMessageId = e2eeMsgId;
+
+                  queueMicrotask(() => {
+                    registerCapturedMessage({
+                      messageId: e2eeMsgId,
+                      altIds: [],
+                      text: trimmed,
+                      senderId: '',
+                      threadId: '',
+                      attachments: [],
+                      timestamp: now,
+                      source: 'MAWVault-E2EE'
+                    });
+                  });
+                } else if (prevEntry.id && capturedMessages.has(prevEntry.id)) {
+                  lastE2EEMessageId = prevEntry.id;
                 }
               }
             }
@@ -524,6 +687,7 @@
             candidate.length >= 2 &&
             candidate.length <= 100 &&
             !candidate.startsWith('http') &&
+            !/^(inbox|pending|other|archived|spam)$/i.test(candidate) &&
             !isTechnicalString(candidate) &&
             !isUnsendNoticeText(candidate)
           ) {
@@ -537,65 +701,83 @@
       return;
     }
 
-    if (/^(LSUpsertMessage|LSDeleteThenInsertMessage)(\.|$)/i.test(moduleName) && args.length >= 18) {
+    const isNoisyDeleteRequest =
+      /^LSDeleteMessageRequest(\.|$)/i.test(moduleName) &&
+      !args.some((a) => typeof a === 'string' && unvaultString(a).includes('mid.$'));
+    if (!isNoisyDeleteRequest) {
+      dlog('PROC', '#9c88ff', moduleName, { args, returnValue });
+    }
+
+    if (
+      /^(LSUpsertMessage|LSDeleteThenInsertMessage|LSInsertMessage|LSReplaceOptimisticMessage)(\.|$)/i.test(
+        moduleName
+      ) &&
+      args.length >= 10
+    ) {
       const rawText = typeof args[0] === 'string' ? unvaultString(args[0]) : undefined;
       const msgId = typeof args[8] === 'string' ? unvaultString(args[8]).trim() : '';
       const otid = typeof args[9] === 'string' ? unvaultString(args[9]).trim() : '';
-      const isAdminMessage = args[12] === true;
 
-      if (isAdminMessage) return;
-      if (!msgId) return;
-
-      let validTimestamps = [];
-      let validIds = [];
-      for (let i = 1; i <= Math.min(16, args.length - 1); i++) {
-        if (Array.isArray(args[i]) && args[i].length === 2) {
-          const strVal = parseLSInt64(args[i]);
-          if (strVal) {
-            const numVal = Number(strVal);
-            if (numVal > 1577836800000 && numVal < 2051222400000) {
-              validTimestamps.push(numVal);
-            } else if (strVal.length >= 6 && strVal !== '0') {
-              validIds.push(strVal);
+      if (msgId) {
+        let validTimestamps = [];
+        let validIds = [];
+        for (let i = 1; i <= Math.min(16, args.length - 1); i++) {
+          if (Array.isArray(args[i]) && args[i].length === 2) {
+            const strVal = parseLSInt64(args[i]);
+            if (strVal) {
+              const numVal = Number(strVal);
+              if (numVal > 1577836800000 && numVal < 2051222400000) {
+                validTimestamps.push(numVal);
+              } else if (strVal.length >= 6 && strVal !== '0') {
+                validIds.push(strVal);
+              }
             }
           }
         }
+
+        const timestamp = validTimestamps.length > 0 ? Math.min(...validTimestamps) : null;
+        const explicitThreadId = parseLSInt64(args[3]);
+        const explicitSenderId = parseLSInt64(args[10]);
+        const threadId = explicitThreadId || validIds[0] || '';
+        const senderId = explicitSenderId || validIds[1] || validIds[0] || '';
+
+        const resolvedId = resolveCanonicalMessageId(msgId);
+        const existingRec = capturedMessages.get(resolvedId);
+        const isClearedByDeleteThenInsert =
+          /^LSDeleteThenInsertMessage(\.|$)/i.test(moduleName) &&
+          (rawText === undefined || rawText === null || rawText.trim() === '') &&
+          Boolean(existingRec && (existingRec.text || existingRec.attachments?.length));
+
+        const isUnsent = Boolean(
+          (rawText && isUnsendNoticeText(rawText)) || isClearedByDeleteThenInsert
+        );
+
+        if (isUnsent) {
+          triggerMessageUnsent(resolvedId, {
+            threadId,
+            senderId,
+            unsendNotice: rawText || '',
+            source: `module:${moduleName}`
+          });
+          return;
+        }
+
+        if (timestamp && !isOldHistoricalTimestamp(timestamp)) {
+          if (rawText && (isVaultToken(rawText) || !isTechnicalString(rawText))) {
+            registerCapturedMessage({
+              messageId: msgId,
+              altIds: [msgId, otid].filter(Boolean),
+              text: rawText,
+              senderId,
+              threadId,
+              attachments: [],
+              timestamp,
+              source: `module:${moduleName}`
+            });
+            return;
+          }
+        }
       }
-
-      const timestamp = validTimestamps.length > 0 ? Math.min(...validTimestamps) : null;
-      const explicitThreadId = parseLSInt64(args[3]);
-      const explicitSenderId = parseLSInt64(args[10]);
-      const threadId = explicitThreadId || validIds[0] || '';
-      const senderId = explicitSenderId || validIds[1] || validIds[0] || '';
-
-      const resolvedId = resolveCanonicalMessageId(msgId);
-      const isUnsent = Boolean(rawText && isUnsendNoticeText(rawText));
-
-      if (isUnsent) {
-        triggerMessageUnsent(resolvedId, {
-          threadId,
-          senderId,
-          unsendNotice: rawText,
-          source: `module:${moduleName}`
-        });
-        return;
-      }
-
-      if (!timestamp || isOldHistoricalTimestamp(timestamp)) return;
-
-      if (rawText && !isTechnicalString(rawText)) {
-        registerCapturedMessage({
-          messageId: msgId,
-          altIds: [msgId, otid].filter(Boolean),
-          text: rawText,
-          senderId,
-          threadId,
-          attachments: [],
-          timestamp,
-          source: `module:${moduleName}`
-        });
-      }
-      return;
     }
 
     let msgIds = [];
@@ -603,6 +785,8 @@
     let texts = [];
     let mediaUrls = [];
     let timestamps = [];
+    let candidateIds = [];
+    let unsendNoticeStr = '';
     let hasUnsendNotice = false;
 
     const allItems = [...args];
@@ -630,11 +814,12 @@
           altIds.push(unvaulted);
         } else if (isUnsendNoticeText(unvaulted)) {
           hasUnsendNotice = true;
+          unsendNoticeStr = unvaulted;
         } else {
           const mUrl = extractMediaUrl(unvaulted);
           if (mUrl) {
             mediaUrls.push(mUrl);
-          } else if (!isTechnicalString(unvaulted)) {
+          } else if (isVaultToken(unvaulted) || !isTechnicalString(unvaulted)) {
             texts.push(unvaulted);
           }
         }
@@ -644,6 +829,8 @@
           const num = Number(i64Str);
           if (num > 1577836800000 && num < 2051222400000) {
             timestamps.push(num);
+          } else if (i64Str.length >= 6 && i64Str !== '0') {
+            candidateIds.push(i64Str);
           }
         } else if (Array.isArray(arg)) {
           inspectLightspeedNode(arg, {
@@ -676,20 +863,29 @@
       const primaryId = msgIds[0];
       const resolvedId = resolveCanonicalMessageId(primaryId);
       const bestTimestamp = timestamps.length > 0 ? Math.min(...timestamps) : null;
+      const fallbackThreadId = candidateIds[0] || '';
+      const fallbackSenderId = candidateIds[1] || candidateIds[0] || '';
 
       const isUnsendProcedure =
-        /^(LSMarkMessageUnsent|LSHandleUnsendMessage|LSDeleteMessage|LSDeleteMessageRequest)(\.|$)/i.test(
+        /^(LSMarkMessageUnsent|LSHandleUnsendMessage|LSDeleteMessage|LSDeleteMessageRequest|LSUpdateUnsentMessage.*|LSRetractMessage|LSRecallMessage|MAW.*Unsend.*|MAW.*Delete.*Message.*)(\.|$)/i.test(
           moduleName
         );
 
       if (isUnsendProcedure || hasUnsendNotice) {
-        triggerMessageUnsent(resolvedId, { source: `module:${moduleName}` });
+        triggerMessageUnsent(resolvedId, {
+          threadId: fallbackThreadId,
+          senderId: fallbackSenderId,
+          unsendNotice: unsendNoticeStr,
+          source: `module:${moduleName}`
+        });
       } else if (texts.length > 0 || mediaUrls.length > 0) {
         if (!bestTimestamp || isOldHistoricalTimestamp(bestTimestamp)) return;
         registerCapturedMessage({
           messageId: primaryId,
           altIds: [...msgIds, ...altIds],
           text: texts[0] || '',
+          senderId: fallbackSenderId,
+          threadId: fallbackThreadId,
           attachments: mediaUrls,
           timestamp: bestTimestamp,
           source: `module:${moduleName}`
@@ -702,8 +898,9 @@
   function wrapReStoreTable(tableObj, tableName) {
     if (!tableObj || typeof tableObj !== 'object' || hookedTables.has(tableObj)) return;
     hookedTables.add(tableObj);
+    dlog('HOOK-RESTORE', '#00cec9', `Đã hook bảng ReStore.${tableName}`);
 
-    const writeMethods = ['put', 'upsert', 'add', 'replace'];
+    const writeMethods = ['put', 'upsert', 'add', 'replace', 'delete'];
     writeMethods.forEach((method) => {
       if (typeof tableObj[method] === 'function') {
         const origMethod = tableObj[method];
@@ -766,6 +963,9 @@
       const isUnvaultMod = /^MAW(Vault|UnvaultTransform)$/i.test(moduleName);
 
       if (typeof exportsObj === 'function') {
+        if (/^MAWUnvaultTransform$/i.test(moduleName) && !mawUnvaultFn) {
+          mawUnvaultFn = exportsObj;
+        }
         return safeWrapFunction(exportsObj, moduleName, isUnvaultMod);
       } else if (typeof exportsObj === 'object') {
         for (const key of Object.keys(exportsObj)) {
@@ -784,7 +984,7 @@
   }
 
   const SAFE_TARGET_MODULE_REGEX =
-    /^(LSUpsertMessage|LSDeleteThenInsertMessage|LSInsertMessage|LSReplaceOptimisticMessage|LSDeleteMessage|LSDeleteMessageRequest|LSMarkMessageUnsent|LSHandleUnsendMessage|LSUpdateMessage|LSInsertBlobAttachment|LSVerifyContactRowExists|LSUpdateOrInsertContact|LSUpsertContact|LSUpdateOrInsertThread|LSVerifyHybridThreadExists|LSUpsertThread|MAWUnvaultTransform|MAWVault|MAWThreadSnippetFor.*Msg|MAWBridgeBuildThreadSnippet)$/i;
+    /^(LSUpsertMessage|LSDeleteThenInsertMessage|LSInsertMessage|LSReplaceOptimisticMessage|LSDeleteMessage|LSDeleteMessageRequest|LSMarkMessageUnsent|LSHandleUnsendMessage|LSUpdateMessage|LSUpdateUnsentMessage.*|LSRetractMessage|LSRecallMessage|LSInsertBlobAttachment|LSVerifyContactRowExists|LSUpdateOrInsertContact|LSUpsertContact|LSUpdateOrInsertThread|LSVerifyHybridThreadExists|LSUpsertThread|MAWUnvaultTransform|MAWVault|MAWThreadSnippetFor.*Msg|MAWBridgeBuildThreadSnippet|MAW.*Unsend.*|MAW.*Delete.*Message.*)$/i;
 
   let currentDefFunc = window.__d;
   function wrapDefineFn(origD) {
@@ -920,7 +1120,9 @@
           const n = Number(v);
           return v.length >= 6 && !(n > 1577836800000 && n < 2051222400000);
         });
-        const tName = directTextLiterals[0];
+        const tName = directTextLiterals.find(
+          (lit) => !/^(inbox|pending|other|archived|spam)$/i.test(lit)
+        );
         if (tId && tName && tName.length >= 2 && tName.length <= 100) {
           threadNameMap.set(tId, tName);
         }
@@ -1115,36 +1317,51 @@
 
           if (isUnsentFlag) {
             triggerMessageUnsent(msgId, { senderId, threadId, senderName, source: context.source });
-          } else if (
-            typeof textContent === 'string' &&
-            textContent.trim().length > 0 &&
-            !isTechnicalString(textContent)
-          ) {
-            if (!timestamp || isOldHistoricalTimestamp(timestamp)) return;
+          } else {
+            const cleanText =
+              typeof textContent === 'string' &&
+              textContent.trim().length > 0 &&
+              !isTechnicalString(textContent)
+                ? textContent.trim()
+                : '';
+
             const attachments = [];
             const attList = obj.attachments || obj.blobAttachments || obj.media || [];
             if (Array.isArray(attList)) {
               for (const att of attList) {
                 const url =
+                  att?.playableUrl ||
+                  att?.audioUrl ||
+                  att?.videoUrl ||
+                  att?.hdUrl ||
+                  att?.sdUrl ||
                   att?.url ||
                   att?.previewUrl ||
-                  att?.playableUrl ||
                   att?.imageUrl ||
                   att?.largePreviewUrl;
                 if (url && typeof url === 'string') attachments.push(unvaultString(url));
               }
             }
-            registerCapturedMessage({
-              messageId: msgId,
-              altIds,
-              text: textContent,
-              senderId,
-              threadId,
-              senderName,
-              attachments,
-              timestamp,
-              source: context.source
-            });
+            const directPlayable =
+              obj.playableUrl || obj.audioUrl || obj.videoUrl || obj.hdUrl || obj.sdUrl;
+            if (typeof directPlayable === 'string') {
+              attachments.push(unvaultString(directPlayable));
+            }
+
+            if (cleanText || attachments.length > 0) {
+              if (!timestamp || isOldHistoricalTimestamp(timestamp)) return;
+              registerCapturedMessage({
+                messageId: msgId,
+                altIds,
+                text: cleanText,
+                senderId,
+                threadId,
+                senderName,
+                attachments,
+                timestamp,
+                source: context.source
+              });
+            }
           }
         }
       }
@@ -1235,6 +1452,21 @@
       protocols !== undefined
         ? new OriginalWebSocket(url, protocols)
         : new OriginalWebSocket(url);
+
+    dlog('WS-NEW', '#00b894', 'Facebook tạo kết nối WebSocket mới:', url);
+
+    ws.addEventListener('open', () => {
+      dlog('WS-OPEN', '#00b894', 'Kết nối WebSocket đã mở:', url);
+      emitToContentScript('FB_WS_RECONNECTED', { url, time: Date.now() });
+    });
+
+    ws.addEventListener('close', (ev) => {
+      dlog('WS-CLOSE', '#d63031', 'Kết nối WebSocket bị đóng:', {
+        url,
+        code: ev.code,
+        reason: ev.reason
+      });
+    });
 
     ws.addEventListener('message', (event) => {
       queueMicrotask(() => {
@@ -1352,6 +1584,14 @@
 
   function findFiberMessageIdForRow(rowEl) {
     if (!rowEl || !(rowEl instanceof HTMLElement)) return '';
+    const domDataId =
+      rowEl.dataset?.messageId || rowEl.getAttribute('data-message-id') || '';
+    if (domDataId) {
+      const cleanDomId = unvaultString(domDataId).trim().replace(/^ee\./, '');
+      if (cleanDomId) {
+        return resolveCanonicalMessageId(cleanDomId);
+      }
+    }
     const priorityNodes = Array.from(rowEl.querySelectorAll('div[dir="auto"], span, div'));
     const elementsToCheck = [rowEl, ...priorityNodes.slice(0, 40)];
     for (const el of elementsToCheck) {
@@ -1381,16 +1621,120 @@
     return '';
   }
 
+  function extractPlayableUrlsFromProps(props, outUrls, depth = 0, seen = new WeakSet()) {
+    if (!props || typeof props !== 'object' || depth > 3) return;
+    if (seen.has(props)) return;
+    seen.add(props);
+
+    const mediaKeyNames = [
+      'playableUrl',
+      'playable_url',
+      'audioUrl',
+      'audio_url',
+      'videoUrl',
+      'video_url',
+      'hdUrl',
+      'sdUrl',
+      'browser_native_hd_url',
+      'browser_native_sd_url'
+    ];
+    for (const k of mediaKeyNames) {
+      let v;
+      try {
+        v = props[k];
+      } catch (_) {
+        continue;
+      }
+      if (typeof v === 'string') {
+        const mUrl = extractMediaUrl(v);
+        if (mUrl && !outUrls.includes(mUrl)) {
+          outUrls.push(mUrl);
+        }
+      }
+    }
+
+    const keys = Object.keys(props);
+    for (let i = 0; i < Math.min(keys.length, 25); i++) {
+      const k = keys[i];
+      if (k === 'children' || k.startsWith('_') || k.startsWith('$$')) continue;
+      let val;
+      try {
+        val = props[k];
+      } catch (_) {
+        continue;
+      }
+      if (typeof val === 'string') {
+        const mUrl = extractMediaUrl(val);
+        if (
+          mUrl &&
+          (/(\.ogg|\.mp3|\.wav|\.m4a|\.aac|\.opus|\.mp4|\.webm|\.mov)(\?|$)/i.test(mUrl) ||
+            /audioclip|videoclip|\/t59\.3654-21\/|\/t42\./i.test(mUrl)) &&
+          !outUrls.includes(mUrl)
+        ) {
+          outUrls.push(mUrl);
+        }
+      } else if (val && typeof val === 'object' && !(val instanceof Node)) {
+        extractPlayableUrlsFromProps(val, outUrls, depth + 1, seen);
+      }
+    }
+  }
+
+  function findFiberPlayableMediaForRow(rowEl) {
+    if (!rowEl || !(rowEl instanceof HTMLElement)) return [];
+    const urls = [];
+    const priorityNodes = Array.from(
+      rowEl.querySelectorAll('audio, video, [role="button"], [role="slider"], div[dir="auto"], div')
+    );
+    const elementsToCheck = [rowEl, ...priorityNodes.slice(0, 45)];
+    const seenProps = new WeakSet();
+    for (const el of elementsToCheck) {
+      const fiberKey = Object.keys(el).find(
+        (k) => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')
+      );
+      if (!fiberKey) continue;
+      let curr = el[fiberKey];
+      for (let step = 0; step < 10 && curr; step++) {
+        extractPlayableUrlsFromProps(curr.memoizedProps, urls, 0, seenProps);
+        if (urls.length >= 4) return urls;
+        curr = curr.return;
+      }
+    }
+    return urls;
+  }
+
   function scanReactFiberOnChatRows() {
     if (!document.body) return;
     let updatedCount = 0;
     const rows = document.querySelectorAll('div[data-scope="messages_table"]');
     rows.forEach((rowEl) => {
-      if (rowEl.dataset.fbMsgId) return;
+      const currentId = rowEl.dataset.fbMsgId || '';
       const msgId = findFiberMessageIdForRow(rowEl);
-      if (msgId) {
+      if (msgId && msgId !== currentId) {
+        if (currentId) {
+          dlog('FIBER-RECYCLED', '#fd79a8', 'React tái sử dụng rowEl cho tin nhắn khác:', {
+            oldId: currentId,
+            newId: msgId
+          });
+          delete rowEl.dataset.fbUnsendRestored;
+          delete rowEl.dataset.fbUnsendMatchedId;
+          delete rowEl.dataset.fbUnsendFirstSeenAt;
+          delete rowEl.dataset.fbUnsendSavedMid;
+          delete rowEl.dataset.fbUnsendSavedText;
+          delete rowEl.dataset.fbUnsendSavedMedia;
+          delete rowEl.dataset.fbUnsendSavedSender;
+          delete rowEl.dataset.fbFiberMedia;
+        }
         rowEl.dataset.fbMsgId = msgId;
         updatedCount++;
+      }
+
+      const fiberMediaUrls = findFiberPlayableMediaForRow(rowEl);
+      if (fiberMediaUrls.length > 0) {
+        const serialized = JSON.stringify(fiberMediaUrls);
+        if (rowEl.dataset.fbFiberMedia !== serialized) {
+          rowEl.dataset.fbFiberMedia = serialized;
+          updatedCount++;
+        }
       }
     });
     if (updatedCount > 0) {
@@ -1400,8 +1744,23 @@
 
   window.addEventListener('message', (event) => {
     if (event.source !== window || !event.data) return;
-    if (event.data.source === 'FB_UNSEND_EXTENSION_CONTENT' && event.data.type === 'SCAN_FIBER') {
-      scanReactFiberOnChatRows();
+    if (event.data.source === 'FB_UNSEND_EXTENSION_CONTENT') {
+      if (event.data.type === 'SCAN_FIBER') {
+        scanReactFiberOnChatRows();
+      } else if (event.data.type === 'REQUEST_MAIN_DEBUG_DUMP') {
+        scanReactFiberOnChatRows();
+        emitToContentScript('FB_MAIN_DEBUG_DUMP', {
+          mainLogs: mainLogBuffer,
+          capturedMessages: Array.from(capturedMessages.values()).slice(-200).map((m) => serializeForLog(m, 0)),
+          pendingVaultMessages: Array.from(pendingVaultMessages.entries()).slice(-50).map(([k, v]) => [k, serializeForLog(v, 0)]),
+          aliasIdMap: Array.from(aliasIdMap.entries()).slice(-200),
+          contactNameMap: Array.from(contactNameMap.entries()).slice(-100),
+          threadNameMap: Array.from(threadNameMap.entries()).slice(-100),
+          vaultMapSize: vaultMap.size,
+          vaultMapSample: Array.from(vaultMap.entries()).slice(-100),
+          hasMawUnvaultFn: Boolean(mawUnvaultFn)
+        });
+      }
     }
   });
 })();
