@@ -1,0 +1,11 @@
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Design drafts & temporary debug logs
+logo-options/
+fb-unsend-debug-*.json
+
+# Release packages
+*.zip
