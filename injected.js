@@ -25,11 +25,11 @@
       return Array.isArray(val) ? `[Array(${val.length})]` : '[Object]';
     }
     if (Array.isArray(val)) {
-      return val.slice(0, 25).map((item) => serializeForLog(item, depth + 1));
+      return val.slice(0, 45).map((item) => serializeForLog(item, depth + 1));
     }
     if (typeof val === 'object') {
       const out = {};
-      const keys = Object.keys(val).slice(0, 25);
+      const keys = Object.keys(val).slice(0, 45);
       for (const k of keys) {
         try {
           out[k] = serializeForLog(val[k], depth + 1);
@@ -58,6 +58,7 @@
   const INITIAL_SYNC_GRACE_MS = 6000;
 
   const capturedMessages = new Map();
+  const messageMetaMap = new Map();
   const pendingVaultMessages = new Map();
   const aliasIdMap = new Map();
   const processedNodes = new WeakSet();
@@ -73,6 +74,7 @@
   window.__FB_UNSEND_MAIN_STATE__ = {
     mainLogBuffer,
     capturedMessages,
+    messageMetaMap,
     pendingVaultMessages,
     aliasIdMap,
     vaultMap,
@@ -272,6 +274,7 @@
     if (
       trimmed.startsWith('@@vault') ||
       trimmed.startsWith('mid.$') ||
+      trimmed.startsWith('unsupportedmid.$') ||
       trimmed.startsWith('ee.mid.$') ||
       trimmed.startsWith('wmid.') ||
       trimmed.startsWith('otid.') ||
@@ -309,7 +312,7 @@
           trimmed
         ) ||
         /^(image|video|audio|application|text)\/[a-z0-9.+-]+$/i.test(trimmed) ||
-        /^(true|false|null|undefined|none|pending|sent|delivered|read|optimistic|success|error)$/i.test(
+        /^(true|false|null|undefined|none|pending|sent|delivered|read|optimistic|success|error|unavailable|unsupported|full)$/i.test(
           trimmed
         )
       ) {
@@ -742,6 +745,21 @@
         const senderId = explicitSenderId || validIds[1] || validIds[0] || '';
 
         const resolvedId = resolveCanonicalMessageId(msgId);
+        if (otid && otid !== resolvedId) {
+          aliasIdMap.set(otid, resolvedId);
+        }
+
+        if (timestamp && !isOldHistoricalTimestamp(timestamp)) {
+          const prevMeta = messageMetaMap.get(resolvedId);
+          messageMetaMap.set(resolvedId, {
+            messageId: resolvedId,
+            altIds: [msgId, otid, ...(prevMeta?.altIds || [])].filter(Boolean),
+            senderId: senderId || prevMeta?.senderId || '',
+            threadId: threadId || prevMeta?.threadId || '',
+            timestamp: prevMeta?.timestamp ? Math.min(prevMeta.timestamp, timestamp) : timestamp
+          });
+        }
+
         const existingRec = capturedMessages.get(resolvedId);
         const isClearedByDeleteThenInsert =
           /^LSDeleteThenInsertMessage(\.|$)/i.test(moduleName) &&
@@ -862,9 +880,11 @@
     if (msgIds.length > 0) {
       const primaryId = msgIds[0];
       const resolvedId = resolveCanonicalMessageId(primaryId);
-      const bestTimestamp = timestamps.length > 0 ? Math.min(...timestamps) : null;
-      const fallbackThreadId = candidateIds[0] || '';
-      const fallbackSenderId = candidateIds[1] || candidateIds[0] || '';
+      const savedMeta = messageMetaMap.get(resolvedId);
+      const rawBestTimestamp = timestamps.length > 0 ? Math.min(...timestamps) : null;
+      const bestTimestamp = rawBestTimestamp || savedMeta?.timestamp || null;
+      const fallbackThreadId = savedMeta?.threadId || candidateIds[0] || '';
+      const fallbackSenderId = savedMeta?.senderId || candidateIds[1] || candidateIds[0] || '';
 
       const isUnsendProcedure =
         /^(LSMarkMessageUnsent|LSHandleUnsendMessage|LSDeleteMessage|LSDeleteMessageRequest|LSUpdateUnsentMessage.*|LSRetractMessage|LSRecallMessage|MAW.*Unsend.*|MAW.*Delete.*Message.*)(\.|$)/i.test(
@@ -880,10 +900,40 @@
         });
       } else if (texts.length > 0 || mediaUrls.length > 0) {
         if (!bestTimestamp || isOldHistoricalTimestamp(bestTimestamp)) return;
+        const isXmaOrAttachmentMod = /Xma|Attachment/i.test(moduleName);
+        const uniqueTexts = Array.from(new Set(texts.map((t) => t.trim()).filter(Boolean)));
+        const isUnsupportedAttachmentPacket =
+          isXmaOrAttachmentMod &&
+          (args.some(
+            (a) =>
+              typeof a === 'string' &&
+              (a === 'unavailable' || a.startsWith('unsupportedmid.$'))
+          ) ||
+            uniqueTexts.some((t) =>
+              /File đính kèm không được hỗ trợ|Unsupported attachment|Tin nhắn không hiển thị|Tin nhắn này không hiển thị trên ứng dụng này/i.test(
+                t
+              )
+            ));
+        let combinedText = '';
+        if (isUnsupportedAttachmentPacket && mediaUrls.length === 0) {
+          const detailParts = uniqueTexts.filter(
+            (t) => !/^Tin nhắn không hiển thị$/i.test(t)
+          );
+          const bodyText =
+            detailParts.length > 0
+              ? detailParts.slice(0, 2).join(' — ')
+              : 'File đính kèm không được hỗ trợ — Tin nhắn này không hiển thị trên ứng dụng này';
+          combinedText = bodyText.startsWith('⚠️') ? bodyText : `⚠️ ${bodyText}`;
+        } else {
+          combinedText =
+            isXmaOrAttachmentMod && uniqueTexts.length > 1
+              ? uniqueTexts.slice(0, 3).join(' — ')
+              : uniqueTexts[0] || '';
+        }
         registerCapturedMessage({
           messageId: primaryId,
-          altIds: [...msgIds, ...altIds],
-          text: texts[0] || '',
+          altIds: [...msgIds, ...altIds, ...(savedMeta?.altIds || [])],
+          text: combinedText,
           senderId: fallbackSenderId,
           threadId: fallbackThreadId,
           attachments: mediaUrls,
@@ -984,7 +1034,7 @@
   }
 
   const SAFE_TARGET_MODULE_REGEX =
-    /^(LSUpsertMessage|LSDeleteThenInsertMessage|LSInsertMessage|LSReplaceOptimisticMessage|LSDeleteMessage|LSDeleteMessageRequest|LSMarkMessageUnsent|LSHandleUnsendMessage|LSUpdateMessage|LSUpdateUnsentMessage.*|LSRetractMessage|LSRecallMessage|LSInsertBlobAttachment|LSVerifyContactRowExists|LSUpdateOrInsertContact|LSUpsertContact|LSUpdateOrInsertThread|LSVerifyHybridThreadExists|LSUpsertThread|MAWUnvaultTransform|MAWVault|MAWThreadSnippetFor.*Msg|MAWBridgeBuildThreadSnippet|MAW.*Unsend.*|MAW.*Delete.*Message.*)$/i;
+    /^(LS(UpsertMessage|DeleteThenInsertMessage|InsertMessage|ReplaceOptimisticMessage|DeleteMessage|DeleteMessageRequest|MarkMessageUnsent|HandleUnsendMessage|UpdateMessage|UpdateUnsentMessage.*|RetractMessage|RecallMessage|InsertBlobAttachment|InsertXmaAttachment|InsertStickerAttachment|InsertAttachment.*|UpsertAttachment.*|UpdateOrInsert.*Attachment.*|VerifyContactRowExists|UpdateOrInsertContact|UpsertContact|UpdateOrInsertThread|VerifyHybridThreadExists|UpsertThread)|MAW(UnvaultTransform|Vault|ThreadSnippetFor.*Msg|BridgeBuildThreadSnippet|.*Unsend.*|.*Delete.*Message.*|.*Attachment.*|.*Xma.*|.*Ephemeral.*|.*ViewOnce.*))$/i;
 
   let currentDefFunc = window.__d;
   function wrapDefineFn(origD) {
@@ -1621,8 +1671,24 @@
     return '';
   }
 
-  function extractPlayableUrlsFromProps(props, outUrls, depth = 0, seen = new WeakSet()) {
-    if (!props || typeof props !== 'object' || depth > 3) return;
+  const UNSUPPORTED_ATTACHMENT_DOM_REGEX =
+    /File đính kèm không được hỗ trợ|Tin nhắn này không hiển thị trên ứng dụng này|Unsupported attachment|isn't available on this app|Chỉ có thể xem trên ứng dụng di động|View once photo|View once video|Ảnh xem một lần|Video xem một lần/i;
+
+  function isLikelyAvatarMediaUrl(url) {
+    if (!url || typeof url !== 'string') return true;
+    return /\/t39\.30808-1\/|p50x50|p100x100|s100x100|p60x60|p40x40|dst-jpg_s(32|36|40|48|50|60|64|80|100)x|emoji\.php|rsrc\.php|static\.xx\.fbcdn\.net/i.test(
+      url
+    );
+  }
+
+  function extractPlayableUrlsFromProps(
+    props,
+    outUrls,
+    depth = 0,
+    seen = new WeakSet(),
+    includePreviewMedia = false
+  ) {
+    if (!props || typeof props !== 'object' || depth > 4) return;
     if (seen.has(props)) return;
     seen.add(props);
 
@@ -1638,6 +1704,20 @@
       'browser_native_hd_url',
       'browser_native_sd_url'
     ];
+    if (includePreviewMedia) {
+      mediaKeyNames.push(
+        'previewUrl',
+        'preview_url',
+        'largePreviewUrl',
+        'large_preview_url',
+        'imageUrl',
+        'image_url',
+        'xmaPreviewUri',
+        'fallbackUrl',
+        'fallback_url'
+      );
+    }
+
     for (const k of mediaKeyNames) {
       let v;
       try {
@@ -1647,14 +1727,14 @@
       }
       if (typeof v === 'string') {
         const mUrl = extractMediaUrl(v);
-        if (mUrl && !outUrls.includes(mUrl)) {
+        if (mUrl && !isLikelyAvatarMediaUrl(mUrl) && !outUrls.includes(mUrl)) {
           outUrls.push(mUrl);
         }
       }
     }
 
     const keys = Object.keys(props);
-    for (let i = 0; i < Math.min(keys.length, 25); i++) {
+    for (let i = 0; i < Math.min(keys.length, 35); i++) {
       const k = keys[i];
       if (k === 'children' || k.startsWith('_') || k.startsWith('$$')) continue;
       let val;
@@ -1665,27 +1745,92 @@
       }
       if (typeof val === 'string') {
         const mUrl = extractMediaUrl(val);
-        if (
-          mUrl &&
-          (/(\.ogg|\.mp3|\.wav|\.m4a|\.aac|\.opus|\.mp4|\.webm|\.mov)(\?|$)/i.test(mUrl) ||
-            /audioclip|videoclip|\/t59\.3654-21\/|\/t42\./i.test(mUrl)) &&
-          !outUrls.includes(mUrl)
-        ) {
-          outUrls.push(mUrl);
+        if (mUrl && !isLikelyAvatarMediaUrl(mUrl)) {
+          const isPlayableFile =
+            /(\.ogg|\.mp3|\.wav|\.m4a|\.aac|\.opus|\.mp4|\.webm|\.mov)(\?|$)/i.test(mUrl) ||
+            /audioclip|videoclip|\/t59\.3654-21\/|\/t42\./i.test(mUrl);
+          const isPreviewImage =
+            includePreviewMedia &&
+            !/(avatar|profile|author|sender|actor)/i.test(k) &&
+            (/(\.jpg|\.jpeg|\.png|\.webp|\.gif)(\?|$)/i.test(mUrl) ||
+              /scontent|fbcdn\.net|cdn\.fbsbx\.com/i.test(mUrl));
+          if ((isPlayableFile || isPreviewImage) && !outUrls.includes(mUrl)) {
+            outUrls.push(mUrl);
+          }
         }
       } else if (val && typeof val === 'object' && !(val instanceof Node)) {
-        extractPlayableUrlsFromProps(val, outUrls, depth + 1, seen);
+        extractPlayableUrlsFromProps(val, outUrls, depth + 1, seen, includePreviewMedia);
       }
     }
   }
 
-  function findFiberPlayableMediaForRow(rowEl) {
+  function collectFiberPropsSummary(rowEl) {
+    if (!rowEl || !(rowEl instanceof HTMLElement)) return [];
+    const results = [];
+    const elementsToCheck = [
+      rowEl,
+      ...Array.from(rowEl.querySelectorAll('div, span, a, [role="button"]')).slice(0, 45)
+    ];
+    const seenFibers = new WeakSet();
+    for (const el of elementsToCheck) {
+      const fiberKey = Object.keys(el).find(
+        (k) => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')
+      );
+      if (!fiberKey) continue;
+      let curr = el[fiberKey];
+      for (let step = 0; step < 12 && curr; step++) {
+        if (seenFibers.has(curr)) {
+          curr = curr.return;
+          continue;
+        }
+        seenFibers.add(curr);
+        const mp = curr.memoizedProps;
+        if (mp && typeof mp === 'object') {
+          const interestingKeys = Object.keys(mp).filter(
+            (k) =>
+              k !== 'children' &&
+              k !== 'className' &&
+              k !== 'style' &&
+              !k.startsWith('__') &&
+              !k.startsWith('on') &&
+              mp[k] !== undefined &&
+              mp[k] !== null &&
+              typeof mp[k] !== 'function'
+          );
+          if (interestingKeys.length > 0) {
+            const snap = {};
+            for (const k of interestingKeys.slice(0, 25)) {
+              snap[k] = serializeForLog(mp[k], 0);
+            }
+            const compName =
+              typeof curr.type === 'function'
+                ? curr.type.displayName || curr.type.name || 'Component'
+                : typeof curr.type === 'string'
+                  ? curr.type
+                  : 'FiberNode';
+            results.push({
+              comp: compName,
+              key: curr.key || null,
+              props: snap
+            });
+            if (results.length >= 25) return results;
+          }
+        }
+        curr = curr.return;
+      }
+    }
+    return results;
+  }
+
+  function findFiberPlayableMediaForRow(rowEl, isUnsupportedRow = false) {
     if (!rowEl || !(rowEl instanceof HTMLElement)) return [];
     const urls = [];
     const priorityNodes = Array.from(
-      rowEl.querySelectorAll('audio, video, [role="button"], [role="slider"], div[dir="auto"], div')
+      rowEl.querySelectorAll(
+        'audio, video, [role="button"], [role="slider"], div[dir="auto"], span, div'
+      )
     );
-    const elementsToCheck = [rowEl, ...priorityNodes.slice(0, 45)];
+    const elementsToCheck = [rowEl, ...priorityNodes.slice(0, 50)];
     const seenProps = new WeakSet();
     for (const el of elementsToCheck) {
       const fiberKey = Object.keys(el).find(
@@ -1693,8 +1838,8 @@
       );
       if (!fiberKey) continue;
       let curr = el[fiberKey];
-      for (let step = 0; step < 10 && curr; step++) {
-        extractPlayableUrlsFromProps(curr.memoizedProps, urls, 0, seenProps);
+      for (let step = 0; step < 12 && curr; step++) {
+        extractPlayableUrlsFromProps(curr.memoizedProps, urls, 0, seenProps, isUnsupportedRow);
         if (urls.length >= 4) return urls;
         curr = curr.return;
       }
@@ -1723,12 +1868,17 @@
           delete rowEl.dataset.fbUnsendSavedMedia;
           delete rowEl.dataset.fbUnsendSavedSender;
           delete rowEl.dataset.fbFiberMedia;
+          delete rowEl.dataset.fbUnsupportedLogged;
+          delete rowEl.dataset.fbUnsupportedUnlocked;
         }
         rowEl.dataset.fbMsgId = msgId;
         updatedCount++;
       }
 
-      const fiberMediaUrls = findFiberPlayableMediaForRow(rowEl);
+      const rawRowText = (rowEl.innerText || rowEl.textContent || '').trim();
+      const isUnsupportedRow = UNSUPPORTED_ATTACHMENT_DOM_REGEX.test(rawRowText);
+
+      const fiberMediaUrls = findFiberPlayableMediaForRow(rowEl, isUnsupportedRow);
       if (fiberMediaUrls.length > 0) {
         const serialized = JSON.stringify(fiberMediaUrls);
         if (rowEl.dataset.fbFiberMedia !== serialized) {
@@ -1736,10 +1886,48 @@
           updatedCount++;
         }
       }
+
+      if (isUnsupportedRow && !rowEl.dataset.fbUnsupportedLogged) {
+        rowEl.dataset.fbUnsupportedLogged = 'true';
+        const resolvedId = msgId ? resolveCanonicalMessageId(msgId) : '';
+        const capturedRec = resolvedId ? capturedMessages.get(resolvedId) : null;
+        const savedMeta = resolvedId ? messageMetaMap.get(resolvedId) : null;
+        const fiberSummary = collectFiberPropsSummary(rowEl);
+        dlog('FIBER-UNSUPPORTED-ROW', '#e056fd', 'Phát hiện dòng File đính kèm không được hỗ trợ trên DOM:', {
+          msgId: resolvedId || msgId,
+          rawRowText: rawRowText.slice(0, 240),
+          fiberMediaUrls,
+          capturedRec: serializeForLog(capturedRec, 0),
+          savedMeta: serializeForLog(savedMeta, 0),
+          fiberSummary
+        });
+      }
     });
     if (updatedCount > 0) {
       emitToContentScript('FB_FIBER_UPDATED', { updatedCount });
     }
+  }
+
+  function buildUnsupportedAndRecentFiberDump() {
+    if (!document.body) return [];
+    const rows = Array.from(document.querySelectorAll('div[data-scope="messages_table"]'));
+    const out = [];
+    rows.forEach((rowEl, idx) => {
+      const rawText = (rowEl.innerText || rowEl.textContent || '').trim();
+      const isUnsupported = UNSUPPORTED_ATTACHMENT_DOM_REGEX.test(rawText);
+      const isRecentTail = idx >= Math.max(0, rows.length - 6);
+      if (!isUnsupported && !isRecentTail) return;
+      const msgId = rowEl.dataset.fbMsgId || findFiberMessageIdForRow(rowEl) || '';
+      out.push({
+        rowIndex: idx,
+        msgId,
+        isUnsupported,
+        rawText: rawText.slice(0, 240),
+        fiberMedia: rowEl.dataset.fbFiberMedia || null,
+        fiberPropsChain: collectFiberPropsSummary(rowEl)
+      });
+    });
+    return out;
   }
 
   window.addEventListener('message', (event) => {
@@ -1752,13 +1940,15 @@
         emitToContentScript('FB_MAIN_DEBUG_DUMP', {
           mainLogs: mainLogBuffer,
           capturedMessages: Array.from(capturedMessages.values()).slice(-200).map((m) => serializeForLog(m, 0)),
+          messageMetaMap: Array.from(messageMetaMap.entries()).slice(-200),
           pendingVaultMessages: Array.from(pendingVaultMessages.entries()).slice(-50).map(([k, v]) => [k, serializeForLog(v, 0)]),
           aliasIdMap: Array.from(aliasIdMap.entries()).slice(-200),
           contactNameMap: Array.from(contactNameMap.entries()).slice(-100),
           threadNameMap: Array.from(threadNameMap.entries()).slice(-100),
           vaultMapSize: vaultMap.size,
           vaultMapSample: Array.from(vaultMap.entries()).slice(-100),
-          hasMawUnvaultFn: Boolean(mawUnvaultFn)
+          hasMawUnvaultFn: Boolean(mawUnvaultFn),
+          fiberRowsInspect: buildUnsupportedAndRecentFiberDump()
         });
       }
     }

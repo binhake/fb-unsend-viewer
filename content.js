@@ -98,6 +98,9 @@
   const UI_IGNORE_REGEX =
     /^(Đã gửi|Đã nhận|Đã xem|Đang gửi|Đang viết|Đang hoạt động|Hoạt động\s+.+\s+trước|Active now|Active\s+.+\s+ago|Sent|Delivered|Seen|Sending|Typing|Enter|Nhấn Enter để gửi|Được mã hóa đầu cuối|End-to-end encrypted|Trả lời|Reply|Chuyển tiếp|Forward|Xem thêm|See more|Bạn đã chuyển tiếp một tin nhắn|\d{1,2}:\d{2}(\s?[AP]M)?(\s+T\d|\s+CN)?)$/i;
 
+  const UNSUPPORTED_ATTACHMENT_REGEX =
+    /(File đính kèm không được hỗ trợ|Tin nhắn này không hiển thị trên ứng dụng này|Unsupported attachment|This message isn't available on this app|Chỉ có thể xem trên ứng dụng di động|View once photo|View once video|Ảnh xem một lần|Video xem một lần)/i;
+
   function isAttachmentFilenameText(text) {
     if (!text || typeof text !== 'string') return false;
     return /^(audioclip|videoclip|voiceclip|audio_clip|video_clip|image|video|audio|file|sticker|gif|attachment)[_-][0-9a-f_-]+(\.[a-z0-9]+)?$/i.test(
@@ -239,6 +242,23 @@
     return false;
   }
 
+  function normalizeUnsupportedAttachmentText(text) {
+    if (!text || typeof text !== 'string') return '';
+    const trimmed = text.trim();
+    if (!trimmed) return '';
+    if (
+      /unsupportedmid\.\$/i.test(trimmed) ||
+      /^unavailable\s*—/i.test(trimmed) ||
+      (/Tin nhắn không hiển thị|File đính kèm không được hỗ trợ|Unsupported attachment|Tin nhắn này không hiển thị trên ứng dụng này/i.test(
+        trimmed
+      ) &&
+        !trimmed.startsWith('⚠️'))
+    ) {
+      return '⚠️ File đính kèm không được hỗ trợ — Tin nhắn này không hiển thị trên ứng dụng này';
+    }
+    return trimmed;
+  }
+
   function sanitizeStoredRecord(msg) {
     if (!msg || typeof msg !== 'object') return msg;
     const base = stripDomReferences(msg);
@@ -261,10 +281,11 @@
     }
     const finalSender = formatSenderAndThreadName(cleanPerson, cleanThread, cleanSender);
     const cleanAttachments = sanitizeAttachmentsList(base.attachments);
+    const normalizedBaseText = normalizeUnsupportedAttachmentText(base.text || '');
     const cleanText =
-      base.text && isAttachmentFilenameText(base.text) && cleanAttachments.length > 0
+      normalizedBaseText && isAttachmentFilenameText(normalizedBaseText) && cleanAttachments.length > 0
         ? ''
-        : base.text || '';
+        : normalizedBaseText;
     return {
       ...base,
       text: cleanText,
@@ -745,7 +766,12 @@
         ? Math.min(existing.timestamp, msg.timestamp)
         : existing?.timestamp || msg.timestamp || getMonotonicTimestamp();
 
-    const rawMergedText = existing?.text || msg.text || '';
+    const normalizedMsgText = normalizeUnsupportedAttachmentText(msg.text || '');
+    const normalizedExistingText = normalizeUnsupportedAttachmentText(existing?.text || '');
+    const rawMergedText =
+      normalizedMsgText && normalizedMsgText.startsWith('⚠️ ')
+        ? normalizedMsgText
+        : normalizedExistingText || normalizedMsgText || '';
     const cleanMergedText =
       rawMergedText && isAttachmentFilenameText(rawMergedText) && combinedAttachments.length > 0
         ? ''
@@ -811,7 +837,7 @@
   }
 
   function upsertUnsentRecord(newRecord) {
-    const cleanText = (newRecord.text || '').trim();
+    const cleanText = normalizeUnsupportedAttachmentText(newRecord.text || '');
     const cleanAttachments = sanitizeAttachmentsList(newRecord.attachments);
     const recIsSelf = inferRecordIsSelf(newRecord);
 
@@ -876,7 +902,11 @@
           ? Math.min(existingItem.timestamp, newRecord.timestamp)
           : existingItem.timestamp || newRecord.timestamp || getMonotonicTimestamp();
 
-      const rawMergedText = cleanText || existingItem.text || '';
+      const normalizedExistingItemText = normalizeUnsupportedAttachmentText(existingItem.text || '');
+      const rawMergedText =
+        cleanText && cleanText.startsWith('⚠️ ')
+          ? cleanText
+          : cleanText || normalizedExistingItemText || '';
       const finalMergedText =
         rawMergedText && isAttachmentFilenameText(rawMergedText) && mergedAttachments.length > 0
           ? ''
@@ -1115,7 +1145,7 @@
             for (const headerEl of els) {
               if (
                 headerEl.closest(
-                  'div[data-scope="messages_table"], [aria-label="Đoạn chat"], [aria-label="Chats"], [role="grid"], [role="log"], [role="textbox"], .fb-unsend-community-restored-list'
+                  'div[data-scope="messages_table"], [role="grid"], [role="log"], [role="textbox"], .fb-unsend-community-restored-list'
                 )
               ) {
                 continue;
@@ -1548,11 +1578,66 @@
       });
     }
 
+    let isUnsupportedAttachmentRow = false;
+    let unsupportedCardEl = null;
+    const unsupportedLines = [];
+    const candidateFallbackNodes = rowEl.querySelectorAll('span[dir="auto"], span, div');
+    for (const el of candidateFallbackNodes) {
+      if (
+        el.closest(
+          'h3, h4, h5, h6, [role="button"][aria-label], .fb-unsend-community-restored-list, .fb-unsend-unlocked-media'
+        )
+      ) {
+        continue;
+      }
+      if (el.childElementCount > 0) continue;
+      const lineTxt = (el.textContent || '').trim();
+      if (!lineTxt || lineTxt.length > 160) continue;
+      if (UNSUPPORTED_ATTACHMENT_REGEX.test(lineTxt)) {
+        isUnsupportedAttachmentRow = true;
+        if (!unsupportedCardEl) {
+          unsupportedCardEl = el.parentElement || el;
+        }
+      }
+    }
+
+    if (isUnsupportedAttachmentRow && unsupportedCardEl) {
+      const cardContainer = unsupportedCardEl.parentElement || unsupportedCardEl;
+      cardContainer.querySelectorAll('span, div').forEach((node) => {
+        if (node.childElementCount > 0) return;
+        const t = (node.textContent || '').trim();
+        if (
+          t &&
+          t.length >= 3 &&
+          t.length <= 160 &&
+          !UNSEND_REGEX.test(t) &&
+          !UI_IGNORE_REGEX.test(t) &&
+          (!rowSenderName || t.toLowerCase() !== rowSenderName.toLowerCase()) &&
+          !unsupportedLines.includes(t)
+        ) {
+          unsupportedLines.push(t);
+        }
+      });
+      if (texts.length === 0) {
+        const joinedUnsupported =
+          unsupportedLines.length > 0
+            ? `⚠️ ${unsupportedLines.slice(0, 2).join(' — ')}`
+            : '⚠️ File đính kèm không được hỗ trợ trên Web';
+        texts.push(joinedUnsupported);
+      }
+    }
+
     const attachments = [];
     const seenPhotoContainers = new Set();
 
     rowEl.querySelectorAll('img, video, audio').forEach((mediaEl) => {
-      if (mediaEl.closest('.fb-unsend-community-restored-list, .fb-unsend-media-list')) return;
+      if (
+        mediaEl.closest(
+          '.fb-unsend-community-restored-list, .fb-unsend-media-list, .fb-unsend-unlocked-media'
+        )
+      ) {
+        return;
+      }
       const sourceChild =
         mediaEl.tagName !== 'IMG' ? mediaEl.querySelector('source[src]') : null;
       const rawSrc =
@@ -1597,14 +1682,27 @@
       } catch (_) {}
     }
 
+    if (currentFiberId && messagesById.has(currentFiberId)) {
+      const netRec = messagesById.get(currentFiberId);
+      if (Array.isArray(netRec?.attachments)) {
+        for (const netUrl of netRec.attachments) {
+          if (typeof netUrl === 'string' && netUrl && !attachments.includes(netUrl)) {
+            attachments.push(netUrl);
+          }
+        }
+      }
+    }
+
     return {
       isUnsentRow: false,
       alreadyRestored: false,
+      isUnsupportedAttachmentRow,
+      unsupportedCardEl,
       unsentNoticeEl: null,
       text: texts.join('\n').trim(),
       attachments: sanitizeAttachmentsList(attachments),
       rowSenderName,
-      isSelf: detectRowIsSelf(rowEl, rowSenderName, null)
+      isSelf: detectRowIsSelf(rowEl, rowSenderName, unsupportedCardEl)
     };
   }
 
@@ -1628,7 +1726,7 @@
     if (!rowEl || !(rowEl instanceof HTMLElement)) return document.body;
 
     const explicitContainer = rowEl.closest(
-      'div[role="dialog"], div[data-pagelet*="ChatTab"], div[aria-label^="Cuộc trò chuyện "], div[aria-label^="Đoạn chat "], div[aria-label^="Tin nhắn trong cuộc trò chuyện "], div[aria-label^="Conversation "], div[aria-label^="Chat with "], div[aria-label^="Community chat "]'
+      'div[role="dialog"], div[data-pagelet*="ChatTab"], div[aria-label^="Cuộc trò chuyện "], div[aria-label^="Đoạn chat "], div[aria-label^="Conversation "], div[aria-label^="Chat with "], div[aria-label^="Community chat "]'
     );
     if (explicitContainer) return explicitContainer;
 
@@ -2068,6 +2166,10 @@
           rowEl.dataset.fbUnsendSavedMedia = JSON.stringify(record.attachments);
         }
 
+        if (analysis.isUnsupportedAttachmentRow && cleanAttachments.length > 0) {
+          renderUnlockedUnsupportedMediaInDom(rowEl, analysis.unsupportedCardEl, cleanAttachments);
+        }
+
         currentSnapshot.set(record.messageId, record);
         currentActiveIds.add(record.messageId);
         if (safePrev?.messageId) {
@@ -2354,7 +2456,8 @@
               !restored.hasNativePlaceholder ||
                 (bestPersonName && bestPersonName !== (restored.personName || '')) ||
                 (bestThreadName && bestThreadName !== (restored.threadName || '')) ||
-                (bestAnchor && !restored.anchorAboveText)
+                (bestAnchor && !restored.anchorAboveText) ||
+                (cleanRestored.text && cleanRestored.text !== (restored.text || ''))
             );
             if (!needsHistoryEnrich) {
               return;
@@ -2808,8 +2911,49 @@
     return img;
   }
 
+  function renderUnlockedUnsupportedMediaInDom(rowEl, unsupportedCardEl, attachments) {
+    if (!rowEl || !unsupportedCardEl || !Array.isArray(attachments) || attachments.length === 0) {
+      return;
+    }
+    const cleanAttachments = sanitizeAttachmentsList(attachments);
+    if (cleanAttachments.length === 0) return;
+
+    const bubbleEl = findOriginalBubbleElement(unsupportedCardEl, rowEl);
+    const targetParent = bubbleEl || unsupportedCardEl.parentElement || unsupportedCardEl;
+    if (targetParent.querySelector('.fb-unsend-unlocked-media')) return;
+
+    const mediaContainer = document.createElement('div');
+    mediaContainer.className = 'fb-unsend-media-list fb-unsend-unlocked-media';
+    cleanAttachments.forEach((url) => {
+      mediaContainer.appendChild(createRestoredMediaElement(url, false));
+    });
+    targetParent.appendChild(mediaContainer);
+
+    dlog('UNSUPPORTED-MEDIA-UNLOCKED', '#00b894', 'Đã bung hiển thị media ẩn từ tin nhắn không hỗ trợ:', {
+      messageId: getRowMessageId(rowEl),
+      attachments: cleanAttachments
+    });
+  }
+
   function renderRestoredContentInDom(rowEl, noticeEl, data) {
-    if (!noticeEl || rowEl.dataset.fbUnsendRestored === 'true') return;
+    if (!noticeEl) return;
+    const cleanAttachments = sanitizeAttachmentsList(data.attachments);
+    const normalizedText = normalizeUnsupportedAttachmentText(data.text || '');
+    const displayText =
+      normalizedText && !(isAttachmentFilenameText(normalizedText) && cleanAttachments.length > 0)
+        ? normalizedText
+        : '';
+
+    if (rowEl.dataset.fbUnsendRestored === 'true') {
+      if (displayText) {
+        const existingSpan = noticeEl.querySelector('.fb-unsend-inline-text');
+        if (existingSpan && existingSpan.textContent !== displayText) {
+          existingSpan.textContent = displayText;
+        }
+      }
+      return;
+    }
+
     rowEl.dataset.fbUnsendRestored = 'true';
     rowEl.dataset.fbUnsendRestoredMid = getRowMessageId(rowEl) || data.messageId || '';
 
@@ -2819,11 +2963,6 @@
     }
 
     const baseText = (noticeEl.textContent || '').trim().replace(/[:.\s]+$/, '');
-    const cleanAttachments = sanitizeAttachmentsList(data.attachments);
-    const displayText =
-      data.text && !(isAttachmentFilenameText(data.text) && cleanAttachments.length > 0)
-        ? data.text
-        : '';
 
     if (displayText) {
       noticeEl.textContent = `${baseText}: `;
@@ -2864,9 +3003,10 @@
 
       const itemIsSelf = inferRecordIsSelf(item);
       const cleanAttachments = sanitizeAttachmentsList(item.attachments);
+      const normalizedItemText = normalizeUnsupportedAttachmentText(item.text || '');
       const displayText =
-        item.text && !(isAttachmentFilenameText(item.text) && cleanAttachments.length > 0)
-          ? item.text
+        normalizedItemText && !(isAttachmentFilenameText(normalizedItemText) && cleanAttachments.length > 0)
+          ? normalizedItemText
           : '';
       if (!displayText && cleanAttachments.length === 0) return;
 
