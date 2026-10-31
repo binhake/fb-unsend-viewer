@@ -395,6 +395,32 @@ function buildMediaItem(url) {
   return buildMediaThumb(url);
 }
 
+function findBestAvatarForItem(item, person, isSelf) {
+  if (item.avatarUrl && typeof item.avatarUrl === 'string' && /^https?:\/\//i.test(item.avatarUrl)) {
+    return item.avatarUrl.trim();
+  }
+  const cleanPerson = (person || '').trim().toLowerCase();
+  const senderId = item.senderId ? String(item.senderId) : '';
+  const pools = [appState.unsentMessages, appState.capturedMessages];
+  for (const list of pools) {
+    if (!Array.isArray(list)) continue;
+    for (const cand of list) {
+      if (!cand || !cand.avatarUrl || !/^https?:\/\//i.test(cand.avatarUrl)) continue;
+      if (senderId && cand.senderId && String(cand.senderId) === senderId) {
+        return cand.avatarUrl.trim();
+      }
+      const candNames = parseRecordNames(cand);
+      if (isSelf && candNames.isSelf) {
+        return cand.avatarUrl.trim();
+      }
+      if (cleanPerson && candNames.person && candNames.person.toLowerCase() === cleanPerson) {
+        return cand.avatarUrl.trim();
+      }
+    }
+  }
+  return '';
+}
+
 function buildMessageCard(item, ts) {
   const { person, thread, isSelf } = parseRecordNames(item);
   const attachments = getRecordAttachments(item);
@@ -407,8 +433,27 @@ function buildMessageCard(item, ts) {
 
   // ── Người gửi ──
   const avatar = card.querySelector('.msg-avatar');
-  avatar.style.background = isSelf ? SELF_AVATAR_COLOR : getAvatarColor(person);
-  avatar.textContent = isSelf ? 'Bạn' : getInitials(person);
+  const fallbackBg = isSelf ? SELF_AVATAR_COLOR : getAvatarColor(person);
+  const fallbackText = isSelf ? 'Bạn' : getInitials(person);
+  avatar.style.background = fallbackBg;
+  avatar.textContent = fallbackText;
+
+  const avatarUrl = findBestAvatarForItem(item, person, isSelf);
+  if (avatarUrl) {
+    const avatarImg = document.createElement('img');
+    avatarImg.className = 'msg-avatar-img';
+    avatarImg.src = avatarUrl;
+    avatarImg.alt = person;
+    avatarImg.referrerPolicy = 'no-referrer';
+    avatarImg.addEventListener('error', function () {
+      avatarImg.remove();
+      avatar.classList.remove('has-img');
+      avatar.textContent = fallbackText;
+    });
+    avatar.textContent = '';
+    avatar.classList.add('has-img');
+    avatar.appendChild(avatarImg);
+  }
 
   const nameEl = card.querySelector('.msg-name');
   nameEl.textContent = person;

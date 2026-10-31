@@ -64,6 +64,8 @@
   const processedNodes = new WeakSet();
   const vaultMap = new Map();
   const contactNameMap = new Map();
+  const contactAvatarMap = new Map();
+  const contactAvatarByNameMap = new Map();
   const threadNameMap = new Map();
   const seenE2EETexts = new Map();
   let lastE2EEMessageId = null;
@@ -580,6 +582,65 @@
     return ts < PAGE_LOAD_TIME - 15 * 1000;
   }
 
+  let avatarEmitTimer = null;
+  function scheduleEmitContactAvatars() {
+    if (avatarEmitTimer) return;
+    avatarEmitTimer = setTimeout(() => {
+      avatarEmitTimer = null;
+      if (contactAvatarMap.size === 0 && contactAvatarByNameMap.size === 0) return;
+      emitToContentScript('FB_CONTACT_AVATARS_UPDATED', {
+        byId: Object.fromEntries(contactAvatarMap.entries()),
+        byName: Object.fromEntries(contactAvatarByNameMap.entries())
+      });
+    }, 350);
+  }
+
+  let lsContactsSynced = false;
+  async function syncContactsFromLSDatabase() {
+    if (lsContactsSynced) return;
+    try {
+      const dbMod = getFbModule('LSDatabaseSingleton');
+      const reqlMod = getFbModule('ReQL');
+      if (!dbMod || !reqlMod || typeof reqlMod.fromTableAscending !== 'function') return;
+      const rawDb =
+        typeof dbMod.getLSDatabaseSingletonPromiseOrValue === 'function'
+          ? await dbMod.getLSDatabaseSingletonPromiseOrValue()
+          : await dbMod.LSDatabaseSingleton;
+      const contactsTable = rawDb?.tables?.contacts || rawDb?.contacts;
+      if (!contactsTable || typeof reqlMod.toArrayAsync !== 'function') return;
+      lsContactsSynced = true;
+      const rows = await reqlMod.toArrayAsync(reqlMod.fromTableAscending(contactsTable));
+      if (!Array.isArray(rows)) return;
+      let added = 0;
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') continue;
+        const cId = parseLSInt64(row.id) || (typeof row.id === 'string' ? row.id : '');
+        const cName = typeof row.name === 'string' ? unvaultString(row.name).trim() : '';
+        const rawPic =
+          row.profilePictureLargeUrl ||
+          row.profilePictureUrl ||
+          row.profilePictureFallbackUrl ||
+          '';
+        const picUrl = typeof rawPic === 'string' ? unvaultString(rawPic).trim() : '';
+        if (cId && cName) {
+          contactNameMap.set(cId, cName);
+        }
+        if (picUrl && /^https?:\/\//i.test(picUrl)) {
+          if (cId) contactAvatarMap.set(cId, picUrl);
+          if (cName) {
+            contactAvatarByNameMap.set(cName.toLowerCase(), picUrl);
+          }
+          added++;
+        }
+      }
+      if (added > 0) {
+        scheduleEmitContactAvatars();
+      }
+    } catch (_) {
+      lsContactsSynced = false;
+    }
+  }
+
   function resolveContactAndThreadName(senderId, threadId, explicitSenderName = '', explicitThreadName = '') {
     const cleanSenderId = senderId ? String(senderId).trim() : '';
     const cleanThreadId = threadId ? String(threadId).trim() : '';
@@ -589,6 +650,10 @@
 
     const finalPersonName = explicitSenderName || mappedContact || '';
     const finalThreadName = explicitThreadName || mappedThread || '';
+    const avatarUrl =
+      (cleanSenderId && contactAvatarMap.get(cleanSenderId)) ||
+      (finalPersonName && contactAvatarByNameMap.get(finalPersonName.toLowerCase())) ||
+      '';
 
     let combinedName = '';
     if (finalPersonName && finalThreadName) {
@@ -607,7 +672,8 @@
     return {
       senderName: combinedName,
       personName: finalPersonName,
-      threadName: finalThreadName
+      threadName: finalThreadName,
+      avatarUrl
     };
   }
 
@@ -719,6 +785,7 @@
       senderName: resolvedNames.senderName || existing?.senderName || '',
       personName: resolvedNames.personName || existing?.personName || '',
       threadName: resolvedNames.threadName || existing?.threadName || '',
+      avatarUrl: resolvedNames.avatarUrl || msgData.avatarUrl || existing?.avatarUrl || '',
       attachments: mergedAttachments,
       timestamp: existing?.timestamp || timestamp || Date.now(),
       capturedAt: existing?.capturedAt || Date.now(),
@@ -782,6 +849,7 @@
         senderName: resolvedNames.senderName || '',
         personName: resolvedNames.personName || '',
         threadName: resolvedNames.threadName || '',
+        avatarUrl: resolvedNames.avatarUrl || '',
         unsendNotice: extraInfo.unsendNotice || '',
         unsentAt: existing?.unsentAt || Date.now(),
         source: extraInfo.source || 'internal',
@@ -798,6 +866,7 @@
       senderName: resolvedNames.senderName || existing.senderName || '',
       personName: resolvedNames.personName || existing.personName || '',
       threadName: resolvedNames.threadName || existing.threadName || '',
+      avatarUrl: resolvedNames.avatarUrl || existing.avatarUrl || '',
       unsendNotice: extraInfo.unsendNotice || existing.unsendNotice || '',
       unsentAt: existing.unsentAt || Date.now(),
       source: extraInfo.source || existing.source || 'internal',
@@ -872,19 +941,34 @@
     if (/^(LSVerifyContactRowExists|LSUpdateOrInsertContact|LSUpsertContact)(\.|$)/i.test(moduleName)) {
       const contactId = parseLSInt64(args[0]);
       if (contactId && contactId !== '0') {
-        for (let i = 1; i < Math.min(args.length, 10); i++) {
+        let foundName = '';
+        let foundAvatar = '';
+        for (let i = 1; i < Math.min(args.length, 12); i++) {
           if (typeof args[i] === 'string') {
             const candidate = unvaultString(args[i]).trim();
-            if (
+            if (!foundAvatar && /^https?:\/\//i.test(candidate)) {
+              foundAvatar = candidate;
+            } else if (
+              !foundName &&
               candidate.length >= 2 &&
               candidate.length <= 80 &&
               !candidate.startsWith('http') &&
               !isTechnicalString(candidate)
             ) {
-              contactNameMap.set(contactId, candidate);
-              break;
+              foundName = candidate;
             }
           }
+        }
+        if (foundName) {
+          contactNameMap.set(contactId, foundName);
+        }
+        if (foundAvatar) {
+          contactAvatarMap.set(contactId, foundAvatar);
+          const nameKey = (foundName || contactNameMap.get(contactId) || '').trim().toLowerCase();
+          if (nameKey) {
+            contactAvatarByNameMap.set(nameKey, foundAvatar);
+          }
+          scheduleEmitContactAvatars();
         }
       }
       return;
@@ -2036,6 +2120,11 @@
         const cName = directTextLiterals[0];
         if (cId && cId !== '0' && cName.length >= 2 && cName.length <= 80) {
           contactNameMap.set(cId, cName);
+          if (directMediaUrls.length > 0 && /^https?:\/\//i.test(directMediaUrls[0])) {
+            contactAvatarMap.set(cId, directMediaUrls[0]);
+            contactAvatarByNameMap.set(cName.toLowerCase(), directMediaUrls[0]);
+            scheduleEmitContactAvatars();
+          }
         }
       } else if (
         /updateOrInsertThread|verifyHybridThreadExists/i.test(currentFunc) &&
@@ -2890,6 +2979,9 @@
 
   function scanReactFiberOnChatRows() {
     if (!document.body) return;
+    if (!lsContactsSynced) {
+      syncContactsFromLSDatabase();
+    }
     let updatedCount = 0;
     const rows = document.querySelectorAll('div[data-scope="messages_table"]');
     rows.forEach((rowEl) => {

@@ -557,6 +557,8 @@ button {
 }
 
 .msg-avatar {
+  position: relative;
+  overflow: hidden;
   display: grid;
   place-items: center;
   flex: none;
@@ -566,6 +568,18 @@ button {
   color: #ffffff;
   font-size: 13px;
   font-weight: 600;
+}
+
+.msg-avatar.has-img {
+  background: transparent !important;
+}
+
+.msg-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+  display: block;
 }
 
 .msg-card.is-self .msg-avatar {

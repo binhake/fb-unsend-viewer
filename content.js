@@ -163,6 +163,53 @@
 
   let currentUserId = '';
   let currentUserFullName = '';
+  const personAvatarByIdMap = new Map();
+  const personAvatarByNameMap = new Map();
+
+  function resolveAvatarForPerson(personName, senderId, isSelf = false, explicitAvatar = '') {
+    if (explicitAvatar && typeof explicitAvatar === 'string' && /^https?:\/\//i.test(explicitAvatar)) {
+      return explicitAvatar.trim();
+    }
+    if (senderId && personAvatarByIdMap.has(String(senderId))) {
+      return personAvatarByIdMap.get(String(senderId)) || '';
+    }
+    if (isSelf && currentUserId && personAvatarByIdMap.has(String(currentUserId))) {
+      return personAvatarByIdMap.get(String(currentUserId)) || '';
+    }
+    const cleanPerson = (personName || '').trim().toLowerCase();
+    if (cleanPerson && personAvatarByNameMap.has(cleanPerson)) {
+      return personAvatarByNameMap.get(cleanPerson) || '';
+    }
+    if (isSelf && currentUserFullName) {
+      const selfLower = currentUserFullName.trim().toLowerCase();
+      if (selfLower && personAvatarByNameMap.has(selfLower)) {
+        return personAvatarByNameMap.get(selfLower) || '';
+      }
+    }
+    return '';
+  }
+
+  function backfillAvatarsInStoredLists() {
+    let changed = false;
+    const tryEnrich = (item) => {
+      if (!item || typeof item !== 'object') return;
+      const resolved = resolveAvatarForPerson(
+        item.personName,
+        item.senderId,
+        item.isSelf,
+        item.avatarUrl
+      );
+      if (resolved && resolved !== item.avatarUrl) {
+        item.avatarUrl = resolved;
+        changed = true;
+      }
+    };
+    unsentMessagesList.forEach(tryEnrich);
+    recentMessagesList.forEach(tryEnrich);
+    if (changed) {
+      saveToStorage();
+    }
+  }
 
   function detectCurrentUserIdentity() {
     try {
@@ -299,6 +346,12 @@
       normalizedBaseText && isAttachmentFilenameText(normalizedBaseText) && cleanAttachments.length > 0
         ? ''
         : normalizedBaseText;
+    const resolvedAvatar = resolveAvatarForPerson(
+      cleanPerson || base.personName || '',
+      base.senderId,
+      inferredSelf,
+      base.avatarUrl
+    );
     return {
       ...base,
       text: cleanText,
@@ -306,6 +359,7 @@
       personName: cleanPerson || base.personName || '',
       threadName: cleanThread,
       senderName: finalSender,
+      avatarUrl: resolvedAvatar || base.avatarUrl || '',
       attachments: cleanAttachments
     };
   }
@@ -567,6 +621,22 @@
       handleUnsentEvent(payload);
     } else if (type === 'FB_FIBER_UPDATED') {
       scanChatMessagesInDom();
+    } else if (type === 'FB_CONTACT_AVATARS_UPDATED') {
+      if (payload.byId && typeof payload.byId === 'object') {
+        for (const [id, url] of Object.entries(payload.byId)) {
+          if (id && typeof url === 'string' && /^https?:\/\//i.test(url)) {
+            personAvatarByIdMap.set(id, url);
+          }
+        }
+      }
+      if (payload.byName && typeof payload.byName === 'object') {
+        for (const [nameKey, url] of Object.entries(payload.byName)) {
+          if (nameKey && typeof url === 'string' && /^https?:\/\//i.test(url)) {
+            personAvatarByNameMap.set(nameKey.toLowerCase(), url);
+          }
+        }
+      }
+      backfillAvatarsInStoredLists();
     } else if (type === 'FB_WS_RECONNECTED') {
       dlog('WS-RECONNECTED', '#00b894', 'Nhận tín hiệu kết nối lại WebSocket, quét lại DOM & Fiber');
       scheduleDomScan();
@@ -790,16 +860,25 @@
         ? ''
         : rawMergedText;
 
+    const finalIsSelf = typeof msg.isSelf === 'boolean' ? msg.isSelf : existing?.isSelf ?? msgIsSelf;
+    const resolvedAvatar = resolveAvatarForPerson(
+      resolvedPerson,
+      msg.senderId || existing?.senderId,
+      finalIsSelf,
+      msg.avatarUrl || existing?.avatarUrl
+    );
+
     const merged = stripDomReferences({
       ...existing,
       ...msg,
       messageId: bestId,
-      isSelf: typeof msg.isSelf === 'boolean' ? msg.isSelf : existing?.isSelf ?? msgIsSelf,
+      isSelf: finalIsSelf,
       text: cleanMergedText,
       attachments: combinedAttachments,
       personName: resolvedPerson,
       threadName: bestThread,
       senderName: resolvedSenderName,
+      avatarUrl: resolvedAvatar,
       anchorAboveText: msg.anchorAboveText || existing?.anchorAboveText || '',
       anchorAboveSender: msg.anchorAboveSender || existing?.anchorAboveSender || '',
       anchorAboveIsSelf:
@@ -925,6 +1004,13 @@
           ? ''
           : rawMergedText;
 
+      const resolvedAvatar = resolveAvatarForPerson(
+        bestPerson,
+        newRecord.senderId || existingItem.senderId,
+        recIsSelf,
+        newRecord.avatarUrl || existingItem.avatarUrl
+      );
+
       const merged = stripDomReferences({
         ...existingItem,
         ...newRecord,
@@ -935,6 +1021,7 @@
         personName: bestPerson,
         threadName: bestThread,
         senderName: resolvedSenderName,
+        avatarUrl: resolvedAvatar,
         anchorAboveText: newRecord.anchorAboveText || existingItem.anchorAboveText || '',
         anchorAboveSender: newRecord.anchorAboveSender || existingItem.anchorAboveSender || '',
         anchorAboveIsSelf:
@@ -974,10 +1061,18 @@
         ? ''
         : cleanText;
 
+    const finalAvatar = resolveAvatarForPerson(
+      newRecord.personName,
+      newRecord.senderId,
+      recIsSelf,
+      newRecord.avatarUrl
+    );
+
     const finalRecord = stripDomReferences({
       ...newRecord,
       text: finalCleanText,
       isSelf: recIsSelf,
+      avatarUrl: finalAvatar,
       attachments: cleanAttachments,
       timestamp: newRecord.timestamp || getMonotonicTimestamp(),
       unsentAt: newRecord.unsentAt || Date.now(),
@@ -1427,6 +1522,77 @@
     });
   }
 
+  function extractAvatarFromChatRow(rowEl, rowSenderName = '') {
+    if (!rowEl || !(rowEl instanceof HTMLElement)) return '';
+    try {
+      const rowRect = rowEl.getBoundingClientRect();
+      const cleanSenderLower = (rowSenderName || '').trim().toLowerCase();
+      const imgs = rowEl.querySelectorAll('img');
+      for (const imgEl of imgs) {
+        if (
+          imgEl.closest(
+            '.fb-unsend-community-restored-list, .fb-unsend-media-list, .fb-unsend-unlocked-media, [aria-label*="cảm xúc"], [aria-label*="reaction"]'
+          )
+        ) {
+          continue;
+        }
+        const src = (imgEl.currentSrc || imgEl.src || '').trim();
+        if (
+          !src ||
+          !src.startsWith('https://') ||
+          /emoji\.php|rsrc\.php|static\.xx\.fbcdn\.net/i.test(src)
+        ) {
+          continue;
+        }
+        const alt = (imgEl.getAttribute('alt') || '').trim();
+        if (/^(Đã xem|Seen by)/i.test(alt)) continue;
+        if (cleanSenderLower && alt && alt.toLowerCase() === cleanSenderLower) {
+          personAvatarByNameMap.set(cleanSenderLower, src);
+          return src;
+        }
+        const rect = imgEl.getBoundingClientRect();
+        const attrW = parseFloat(imgEl.getAttribute('width') || '0') || 0;
+        const attrH = parseFloat(imgEl.getAttribute('height') || '0') || 0;
+        const w = rect.width || attrW;
+        const h = rect.height || attrH;
+        const isLeftSide =
+          rowRect.width <= 0 || rect.left <= rowRect.left + Math.min(90, rowRect.width * 0.35);
+        if (w >= 22 && w <= 52 && h >= 22 && h <= 52 && isLeftSide) {
+          if (cleanSenderLower && !isSelfKeyword(cleanSenderLower)) {
+            personAvatarByNameMap.set(cleanSenderLower, src);
+          }
+          return src;
+        }
+      }
+      const svgImages = rowEl.querySelectorAll('svg image');
+      for (const svgImg of svgImages) {
+        const href = (
+          svgImg.getAttribute('xlink:href') ||
+          svgImg.getAttribute('href') ||
+          ''
+        ).trim();
+        if (
+          !href ||
+          !href.startsWith('https://') ||
+          /emoji\.php|rsrc\.php|static\.xx\.fbcdn\.net/i.test(href)
+        ) {
+          continue;
+        }
+        const svgEl = svgImg.closest('svg');
+        const aria = (svgEl?.getAttribute('aria-label') || '').trim();
+        if (/^(Đã xem|Seen by)/i.test(aria)) continue;
+        const rect = (svgEl || svgImg).getBoundingClientRect();
+        if (rect.width >= 22 && rect.width <= 52 && rect.height >= 22 && rect.height <= 52) {
+          if (cleanSenderLower && !isSelfKeyword(cleanSenderLower)) {
+            personAvatarByNameMap.set(cleanSenderLower, href);
+          }
+          return href;
+        }
+      }
+    } catch (_) {}
+    return '';
+  }
+
   function analyzeChatRow(rowEl) {
     if (!rowEl || !(rowEl instanceof HTMLElement)) {
       return {
@@ -1436,11 +1602,13 @@
         text: '',
         attachments: [],
         rowSenderName: '',
+        rowAvatarUrl: '',
         isSelf: false
       };
     }
 
     const rowSenderName = extractSenderFromChatRow(rowEl);
+    const rowAvatarUrl = extractAvatarFromChatRow(rowEl, rowSenderName);
 
     const hasRestoredDomNodes = Array.from(
       rowEl.querySelectorAll('.fb-unsend-inline-text, .fb-unsend-media-list')
@@ -1531,6 +1699,7 @@
         text: '',
         attachments: [],
         rowSenderName,
+        rowAvatarUrl,
         isSelf: detectRowIsSelf(rowEl, rowSenderName, unsentNoticeEl)
       };
     }
@@ -1774,6 +1943,7 @@
       text: texts.join('\n').trim(),
       attachments: sanitizeAttachmentsList(attachments),
       rowSenderName,
+      rowAvatarUrl,
       isSelf: detectRowIsSelf(rowEl, rowSenderName, unsupportedCardEl)
     };
   }
@@ -2102,6 +2272,16 @@
       rowEl.dataset.fbUnsendIsSelf = analysis.isSelf ? 'true' : 'false';
 
       if (analysis.isUnsentRow) {
+        if (
+          analysis.rowAvatarUrl &&
+          !analysis.isSelf &&
+          (noticePerson || analysis.rowSenderName || inheritedOtherSender)
+        ) {
+          const avPerson = (noticePerson || analysis.rowSenderName || inheritedOtherSender).trim().toLowerCase();
+          if (avPerson && !isSelfKeyword(avPerson)) {
+            personAvatarByNameMap.set(avPerson, analysis.rowAvatarUrl);
+          }
+        }
         if (!analysis.alreadyRestored && analysis.unsentNoticeEl) {
           if (!rowEl.dataset.fbUnsendFirstSeenAt) {
             rowEl.dataset.fbUnsendFirstSeenAt = String(Date.now());
@@ -2183,6 +2363,10 @@
               inheritedOtherSender
             );
 
+        if (analysis.rowAvatarUrl && personName && !analysis.isSelf && !isGenericSenderName(personName)) {
+          personAvatarByNameMap.set(personName.toLowerCase(), analysis.rowAvatarUrl);
+        }
+
         if (analysis.text) {
           lastNormalRowInfoByContainer.set(container, {
             text: analysis.text,
@@ -2202,6 +2386,12 @@
         );
 
         const existingById = messagesById.get(msgId);
+        const resolvedAvatarUrl = resolveAvatarForPerson(
+          personName,
+          existingById?.senderId || safePrev?.senderId,
+          analysis.isSelf,
+          analysis.rowAvatarUrl || safePrev?.avatarUrl || existingById?.avatarUrl
+        );
         const record = {
           messageId: msgId,
           fiberMsgId: fiberMsgId || safePrev?.fiberMsgId || '',
@@ -2211,6 +2401,7 @@
           personName,
           threadName: !isGenericSenderName(threadName) ? threadName : safePrev?.threadName || '',
           senderName: fullSenderName,
+          avatarUrl: resolvedAvatarUrl,
           anchorAboveText: anchorAboveText || safePrev?.anchorAboveText || '',
           anchorAboveSender: anchorAboveSender || safePrev?.anchorAboveSender || '',
           anchorAboveIsSelf:
