@@ -78,11 +78,81 @@
     recentLsProcedureRing: [],
     unsupportedCallSnapshots: [],
     activeProbes: [],
+    e2eeRavenExtracted: [],
     moduleSources: {}
   };
   const interestingModuleSet = new Set();
   const capturedModuleExports = new Map();
+  const passiveModuleExports = new Map();
   const probedMessageIds = new Set();
+  const probedE2EEThreads = new Set();
+  const unlockedViewOnceMediaMap = new Map();
+  let fbRequireFn = null;
+  let fbImportNamespaceFn = null;
+
+  function getFbModule(modName) {
+    if (passiveModuleExports.has(modName)) {
+      const p = passiveModuleExports.get(modName);
+      if (p && (typeof p !== 'object' || Object.keys(p).length > 0)) return p;
+    }
+    if (capturedModuleExports.has(modName)) {
+      const c = capturedModuleExports.get(modName);
+      if (c && (typeof c !== 'object' || Object.keys(c).length > 0)) return c;
+    }
+    const reqCandidates = [
+      fbImportNamespaceFn,
+      fbRequireFn,
+      typeof window.require === 'function' ? window.require : null
+    ];
+    for (const fn of reqCandidates) {
+      if (typeof fn === 'function') {
+        try {
+          const mod = fn(modName);
+          if (mod && (typeof mod !== 'object' || Object.keys(mod).length > 0)) {
+            passiveModuleExports.set(modName, mod);
+            return mod;
+          }
+        } catch (_) {}
+      }
+    }
+    return null;
+  }
+
+  function bytesToDataUrl(buf, mimeType = 'image/jpeg') {
+    try {
+      const u8 =
+        buf instanceof Uint8Array
+          ? buf
+          : buf instanceof ArrayBuffer
+            ? new Uint8Array(buf)
+            : ArrayBuffer.isView(buf)
+              ? new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+              : null;
+      if (!u8 || u8.byteLength === 0) return null;
+      let bin = '';
+      const chunkSize = 8192;
+      for (let i = 0; i < u8.byteLength; i += chunkSize) {
+        const sub = u8.subarray(i, Math.min(i + chunkSize, u8.byteLength));
+        bin += String.fromCharCode.apply(null, sub);
+      }
+      return `data:${mimeType};base64,${btoa(bin)}`;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function uint8ToBase64(u8) {
+    try {
+      const maxLen = Math.min(u8.length, 65536);
+      let bin = '';
+      for (let i = 0; i < maxLen; i++) {
+        bin += String.fromCharCode(u8[i]);
+      }
+      return `[Bytes(${u8.length}):base64:${btoa(bin)}]`;
+    } catch (e) {
+      return `[Bytes(${u8.length}):err:${String(e)}]`;
+    }
+  }
 
   function serializeUntruncated(val, depth = 0) {
     if (val === null || val === undefined) return val;
@@ -91,7 +161,25 @@
     }
     if (typeof val === 'number' || typeof val === 'boolean') return val;
     if (typeof val === 'function') return `[Function: ${val.name || 'anonymous'}]`;
-    if (depth >= 4) return Array.isArray(val) ? `[Array(${val.length})]` : '[Object]';
+    if (val instanceof ArrayBuffer) {
+      return uint8ToBase64(new Uint8Array(val));
+    }
+    if (ArrayBuffer.isView(val)) {
+      return uint8ToBase64(new Uint8Array(val.buffer, val.byteOffset, val.byteLength));
+    }
+    if (val instanceof Map) {
+      const mapOut = {};
+      let count = 0;
+      for (const [k, v] of val.entries()) {
+        if (count++ >= 40) break;
+        mapOut[String(k)] = serializeUntruncated(v, depth + 1);
+      }
+      return { __type: 'Map', size: val.size, entries: mapOut };
+    }
+    if (val instanceof Set) {
+      return { __type: 'Set', size: val.size, values: serializeUntruncated(Array.from(val).slice(0, 40), depth + 1) };
+    }
+    if (depth >= 7) return Array.isArray(val) ? `[Array(${val.length})]` : '[Object]';
     if (Array.isArray(val)) {
       return val.slice(0, 80).map((item) => serializeUntruncated(item, depth + 1));
     }
@@ -257,6 +345,12 @@
     /removed a message/i,
     /message was unsent/i
   ];
+
+  const FB_LIKE_STICKER_IDS = new Set([
+    '369239263222822',
+    '369239343222814',
+    '369239383222810'
+  ]);
 
   const SYSTEM_NOTICE_PATTERNS = [
     /Tin nhắn này đã bị gỡ do không tuân thủ Tiêu chuẩn cộng đồng/i,
@@ -833,6 +927,25 @@
       dlog('PROC', '#9c88ff', moduleName, { args, returnValue });
     }
 
+    if (/^MpsRavenToBridge\.(processRavenAttachment|ravenToBridge)$/i.test(moduleName)) {
+      try {
+        const arg0 = args[0];
+        const msgWrapper = arg0?.message || arg0;
+        const suppMap = arg0?.supplementalMessages || null;
+        const ravenInfo = decodeRavenFromProtobufWrapper(msgWrapper, suppMap);
+        if (ravenInfo) {
+          deepUnsupportedInspector.e2eeRavenExtracted.push({
+            t: new Date().toISOString(),
+            source: moduleName,
+            ravenInfo
+          });
+          if (deepUnsupportedInspector.e2eeRavenExtracted.length > 20) {
+            deepUnsupportedInspector.e2eeRavenExtracted.shift();
+          }
+        }
+      } catch (_) {}
+    }
+
     if (
       /^(LSUpsertMessage|LSDeleteThenInsertMessage|LSInsertMessage|LSReplaceOptimisticMessage)(\.|$)/i.test(
         moduleName
@@ -950,6 +1063,8 @@
           msgIds.push(unvaulted);
         } else if (unvaulted.startsWith('ee.mid.$')) {
           altIds.push(unvaulted.replace(/^ee\./, ''));
+        } else if (FB_LIKE_STICKER_IDS.has(unvaulted)) {
+          texts.push('👍');
         } else if (/^\d{15,22}$/.test(unvaulted)) {
           altIds.push(unvaulted);
         } else if (isUnsendNoticeText(unvaulted)) {
@@ -967,7 +1082,9 @@
         const i64Str = parseLSInt64(arg);
         if (i64Str) {
           const num = Number(i64Str);
-          if (num > 1577836800000 && num < 2051222400000) {
+          if (FB_LIKE_STICKER_IDS.has(i64Str)) {
+            texts.push('👍');
+          } else if (num > 1577836800000 && num < 2051222400000) {
             timestamps.push(num);
           } else if (i64Str.length >= 6 && i64Str !== '0') {
             candidateIds.push(i64Str);
@@ -1226,10 +1343,522 @@
   }
 
   const SAFE_TARGET_MODULE_REGEX =
-    /^(LS(UpsertMessage|DeleteThenInsertMessage|InsertMessage|ReplaceOptimisticMessage|DeleteMessage|DeleteMessageRequest|MarkMessageUnsent|HandleUnsendMessage|UpdateMessage|InsertBlobAttachment|InsertAttachment|InsertXmaAttachment|InsertStickerAttachment|VerifyContactRowExists|UpdateOrInsertContact|UpsertContact|UpdateOrInsertThread|VerifyHybridThreadExists|UpsertThread)|MAW(UnvaultTransform|Vault|ThreadSnippetFor.*Msg|BridgeBuildThreadSnippet))$/i;
+    /^(LS(UpsertMessage|DeleteThenInsertMessage|InsertMessage|ReplaceOptimisticMessage|DeleteMessage|DeleteMessageRequest|MarkMessageUnsent|HandleUnsendMessage|UpdateMessage|InsertBlobAttachment|InsertAttachment|InsertXmaAttachment|InsertStickerAttachment|VerifyContactRowExists|UpdateOrInsertContact|UpsertContact|UpdateOrInsertThread|VerifyHybridThreadExists|UpsertThread)|MAW(UnvaultTransform|Vault|ThreadSnippetFor.*Msg|BridgeBuildThreadSnippet)|MpsRavenToBridge)$/i;
+
+  const PASSIVE_EXPORT_CAPTURE_REGEX =
+    /^(Mps(OverBridge|RavenToBridge|MediaToBridge|MessageToBridge|MessageToBridgeWrapper|MessageToLoadResponse|ToBridgeMessageId|Types|LoadMessagesStep|ReactionSupplementals)|MAW(ProtobufDeserializers|AttachmentBlob\.react|GetAttachmentThumbnailBlob|DbMedia|MediaDownloadStatusBackendFetcher|DownloadMediaInWorker|DownloadMediaInWorkerDeferred|BridgeNewMsgHandler|BridgeNewMediaHandler|BridgeBuildMsg|BridgeSendAndReceive|MediaManagerUtils|MediaUtils)|WAMediaTransport\.pb|WAArmadilloApplication\.pb|WAConsumerApplication\.pb|WAHashUtils|WAByteArray|decodeProtobuf|LSDatabaseSingleton|ReQL)$/i;
 
   const INTERESTING_MODULE_NAME_REGEX =
-    /Attachment|Ephemeral|ViewOnce|Unsupported|MediaFallback|LightspeedRequest|LSPlatform|SyncParams|Capabilit|Xma|Raven/i;
+    /^Mps[A-Z]|Attachment|Ephemeral|ViewOnce|Unsupported|MediaFallback|LightspeedRequest|LSPlatform|SyncParams|LSVersion|Capabilit|Xma|Raven|MAWDbMedia|MAWMedia|MAWBridge|WAMedia|WAArmadillo/i;
+
+  const SOURCE_CAPTURE_MODULE_REGEX =
+    /^Mps[A-Z]|Raven|ViewOnce|LSPlatformMessengerSyncParams|LSVersion|MAWSecure.*Attachment|MAWAttachmentBlob|MAWGetAttachmentThumbnailBlob|MAWThreadViewAttachmentStateHandlerContent|MAWMediaTransportUtils|MAWMediaManagerUtils|MAWMediaUtils|WAMediaTransport\.pb|WAArmadilloApplication\.pb|MAWBridgeBuildMsg|MAWBridgeMsg|MAWBridgeNewMsgHandler|MAWBridgeNewMediaHandler|MAWDbMedia|MAWMediaDownload|MAWDownload|MAWProtobufDeserializers|MpsUnsupported|MpsEphemeral|MAWEphemeral|EphemeralMediaViewMode|mwpIsMessageUnsupported|MWV2UnsupportedAttachment|MWV2ChatUnsupportedMessage|MWMustacheUnsupportedMediaAttachment|LSComputeParticipantCapabilities|LSComputeOptimisticThreadCapabilities|LSIssueThreadCapabilitySyncTask|LSWriteThreadCapabilities|MAWUpdateLSThreadCapabilities|MWLSThreadCapabilities|LSPlatformMessengerConfig|LSPlatformHardcodedInitSync|LSPlatformGraphQLLightspeedRequest|LSMediaUrlAttachment/i;
+
+  function applyUnlockedViewOnceMedia(msgId, mediaUrls, meta = {}) {
+    if (!msgId || !Array.isArray(mediaUrls) || mediaUrls.length === 0) return;
+    const validUrls = mediaUrls.filter((u) => typeof u === 'string' && u.length > 0);
+    if (validUrls.length === 0) return;
+
+    unlockedViewOnceMediaMap.set(msgId, validUrls);
+
+    const labelText = meta.mediaType === 'video' ? '① Video (Xem 1 lần)' : '① Ảnh (Xem 1 lần)';
+    registerCapturedMessage({
+      messageId: msgId,
+      altIds: [msgId],
+      text: labelText,
+      senderId: meta.senderId || '',
+      threadId: meta.threadId || '',
+      attachments: validUrls,
+      timestamp: meta.timestamp || Date.now(),
+      source: 'E2EE-ViewOnce-Raven'
+    });
+
+    if (document.body) {
+      let domUpdated = false;
+      const rows = document.querySelectorAll('div[data-scope="messages_table"]');
+      rows.forEach((rowEl) => {
+        const rId =
+          rowEl.dataset.fbMsgId ||
+          rowEl.dataset.messageId ||
+          findFiberMessageIdForRow(rowEl) ||
+          '';
+        if (rId === msgId) {
+          rowEl.dataset.fbMsgId = msgId;
+          rowEl.dataset.fbViewOnceRow = 'true';
+          rowEl.dataset.fbFiberMedia = JSON.stringify(validUrls);
+          domUpdated = true;
+        }
+      });
+      if (domUpdated) {
+        emitToContentScript('FB_FIBER_UPDATED', { updatedCount: 1, msgId });
+      }
+    }
+  }
+
+  async function decryptWhatsAppMediaFromTransport(
+    integralObj,
+    mediaType = 'image',
+    mimeType = 'image/jpeg'
+  ) {
+    try {
+      const directPath = integralObj?.directPath;
+      const rawKey = integralObj?.mediaKey;
+      if (!directPath || !rawKey || !window.crypto?.subtle) return null;
+
+      const mediaKey =
+        rawKey instanceof Uint8Array
+          ? rawKey
+          : rawKey instanceof ArrayBuffer
+            ? new Uint8Array(rawKey)
+            : ArrayBuffer.isView(rawKey)
+              ? new Uint8Array(rawKey.buffer, rawKey.byteOffset, rawKey.byteLength)
+              : null;
+      if (!mediaKey || mediaKey.byteLength !== 32) return null;
+
+      const infoStr =
+        mediaType === 'video'
+          ? 'WhatsApp Video Keys'
+          : mediaType === 'audio'
+            ? 'WhatsApp Audio Keys'
+            : 'WhatsApp Image Keys';
+
+      const baseKey = await window.crypto.subtle.importKey('raw', mediaKey, 'HKDF', false, [
+        'deriveBits'
+      ]);
+      const derivedBits = await window.crypto.subtle.deriveBits(
+        {
+          name: 'HKDF',
+          hash: 'SHA-256',
+          salt: new Uint8Array(32),
+          info: new TextEncoder().encode(infoStr)
+        },
+        baseKey,
+        112 * 8
+      );
+      const derived = new Uint8Array(derivedBits);
+      const iv = derived.slice(0, 16);
+      const cipherKeyBytes = derived.slice(16, 48);
+
+      const aesKey = await window.crypto.subtle.importKey(
+        'raw',
+        cipherKeyBytes,
+        { name: 'AES-CBC' },
+        false,
+        ['decrypt']
+      );
+
+      const urlCandidates = directPath.startsWith('http')
+        ? [directPath]
+        : [
+            `https://mmg.whatsapp.net${directPath}`,
+            `https://scontent.xx.fbcdn.net${directPath}`,
+            `https://rupload.facebook.com${directPath}`
+          ];
+
+      for (const cdnUrl of urlCandidates) {
+        try {
+          const resp = await window.fetch(cdnUrl, { credentials: 'omit' });
+          if (!resp.ok) continue;
+          const encBuf = await resp.arrayBuffer();
+          if (!encBuf || encBuf.byteLength <= 16) continue;
+
+          const sliceCandidates = [
+            encBuf.byteLength > 10 ? encBuf.slice(0, encBuf.byteLength - 10) : null,
+            encBuf
+          ].filter(Boolean);
+
+          for (const cipherBuf of sliceCandidates) {
+            try {
+              const plainBuf = await window.crypto.subtle.decrypt(
+                { name: 'AES-CBC', iv },
+                aesKey,
+                cipherBuf
+              );
+              if (plainBuf && plainBuf.byteLength > 0) {
+                return bytesToDataUrl(plainBuf, mimeType);
+              }
+            } catch (_) {}
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  async function resolveFullViewOnceMedia(
+    fullMsgId,
+    tIntegral,
+    tAncillary,
+    thumbObj,
+    isVideo,
+    meta
+  ) {
+    try {
+      const mimeType = tAncillary?.mimetype || (isVideo ? 'video/mp4' : 'image/jpeg');
+      const mediaType = isVideo ? 'video' : 'image';
+
+      const bridgeSendMod = getFbModule('MAWBridgeSendAndReceive');
+      const hashUtilsMod = getFbModule('WAHashUtils');
+      if (
+        tIntegral?.fileSha256 &&
+        bridgeSendMod?.sendAndReceive &&
+        hashUtilsMod?.toPlaintextHash
+      ) {
+        try {
+          const ptHash = hashUtilsMod.toPlaintextHash(tIntegral.fileSha256);
+          if (ptHash) {
+            const blobRes = await bridgeSendMod.sendAndReceive(
+              'backend',
+              'getBlobDataUrlByPlaintextHash',
+              { description: 'view_once_unlock', plaintextHash: ptHash }
+            );
+            if (blobRes instanceof Blob && blobRes.size > 0) {
+              const arrBuf = await blobRes.arrayBuffer();
+              const dataUrl = bytesToDataUrl(arrBuf, blobRes.type || mimeType);
+              if (dataUrl) {
+                applyUnlockedViewOnceMedia(fullMsgId, [dataUrl], meta);
+                return;
+              }
+            } else if (typeof blobRes === 'string' && blobRes.length > 0) {
+              applyUnlockedViewOnceMedia(fullMsgId, [blobRes], meta);
+              return;
+            }
+          }
+        } catch (_) {}
+      }
+
+      const fullDataUrl = await decryptWhatsAppMediaFromTransport(tIntegral, mediaType, mimeType);
+      if (fullDataUrl) {
+        applyUnlockedViewOnceMedia(fullMsgId, [fullDataUrl], meta);
+        return;
+      }
+
+      if (thumbObj?.downloadableThumbnail) {
+        const dlThumbUrl = await decryptWhatsAppMediaFromTransport(
+          thumbObj.downloadableThumbnail,
+          'image',
+          'image/jpeg'
+        );
+        if (dlThumbUrl) {
+          applyUnlockedViewOnceMedia(fullMsgId, [dlThumbUrl], meta);
+        }
+      }
+    } catch (_) {}
+  }
+
+  function decodeRavenFromProtobufWrapper(msgWrapper, supplementalMessages, rawMsgObj = null) {
+    try {
+      const deserMod = getFbModule('MAWProtobufDeserializers');
+      const mediaToBridgeMod = getFbModule('MpsMediaToBridge');
+      const decodeProtoMod = getFbModule('decodeProtobuf');
+      const mediaTransportPb = getFbModule('WAMediaTransport.pb');
+
+      let topBackup = null;
+      try {
+        topBackup = msgWrapper?.deserialize?.();
+      } catch (_) {}
+      if (!topBackup && deserMod?.DeserializedBackupMessage?.create) {
+        const rawTopBytes =
+          msgWrapper?.message?.payload ?? rawMsgObj?.toplevelProtobuf?.payload ?? null;
+        if (rawTopBytes) {
+          try {
+            topBackup = deserMod.DeserializedBackupMessage.create(rawTopBytes);
+          } catch (_) {}
+        }
+      }
+
+      const topEnc = topBackup?.encryptedTransportMessage?.();
+      const topArmadillo = topEnc?.armadillo?.();
+      const topContent = topArmadillo?.payload?.content || topArmadillo?.proto?.payload?.content;
+      const topRaven = topContent?.ravenMessage ?? topContent?.ravenMessageMsgr ?? null;
+
+      const suppDecoded = [];
+      let suppRaven = null;
+      let suppNotif = null;
+
+      const suppEntries = [];
+      if (supplementalMessages) {
+        if (typeof supplementalMessages.forEach === 'function') {
+          supplementalMessages.forEach((v, k) => suppEntries.push([k, v]));
+        } else if (typeof supplementalMessages === 'object') {
+          for (const [k, v] of Object.entries(supplementalMessages)) {
+            suppEntries.push([k, v]);
+          }
+        }
+      }
+
+      for (const [suppKey, suppVal] of suppEntries) {
+        try {
+          const payloadBytes = suppVal?.payload ?? suppVal?.message?.payload ?? suppVal;
+          let backup = null;
+          if (typeof suppVal?.deserialize === 'function') {
+            backup = suppVal.deserialize();
+          } else if (deserMod?.DeserializedBackupMessage?.create && payloadBytes) {
+            backup = deserMod.DeserializedBackupMessage.create(payloadBytes);
+          }
+          const enc = backup?.encryptedTransportMessage?.();
+          const arm = enc?.armadillo?.();
+          const cont = arm?.payload?.content || arm?.proto?.payload?.content;
+          const rMsg = cont?.ravenMessage ?? cont?.ravenMessageMsgr ?? null;
+          const rNotif = cont?.ravenActionNotifMessage ?? null;
+          if (rMsg && (rMsg.imageMessage || rMsg.videoMessage || !suppRaven)) {
+            suppRaven = rMsg;
+          }
+          if (rNotif) suppNotif = rNotif;
+          suppDecoded.push({
+            key: String(suppKey),
+            contentKeys: cont ? Object.keys(cont) : [],
+            raven: serializeUntruncated(rMsg, 0),
+            notif: serializeUntruncated(rNotif, 0)
+          });
+        } catch (err) {
+          suppDecoded.push({ key: String(suppKey), error: String(err) });
+        }
+      }
+
+      const activeRaven = suppRaven || topRaven;
+      if (!activeRaven && !topRaven) return null;
+
+      let decodedImageTransport = null;
+      let decodedVideoTransport = null;
+      let bridgeMediaPreview = null;
+
+      const imgMsg = suppRaven?.imageMessage || topRaven?.imageMessage || null;
+      const vidMsg = suppRaven?.videoMessage || topRaven?.videoMessage || null;
+
+      if (imgMsg) {
+        const rawImgBytes = imgMsg?.payload ?? imgMsg?.image?.payload;
+        if (rawImgBytes && decodeProtoMod?.decodeProtobuf && mediaTransportPb?.ImageTransportSpec) {
+          try {
+            decodedImageTransport = decodeProtoMod.decodeProtobuf(
+              mediaTransportPb.ImageTransportSpec,
+              rawImgBytes
+            );
+          } catch (_) {}
+        }
+        if (!decodedImageTransport && deserMod?.DeserializedImageMessage) {
+          try {
+            const wrappedInput = imgMsg.image ? imgMsg : { image: imgMsg };
+            const inst = new deserMod.DeserializedImageMessage(wrappedInput);
+            decodedImageTransport = inst.payload;
+          } catch (e) {
+            decodedImageTransport = { error: String(e) };
+          }
+        }
+        if (
+          mediaToBridgeMod?.getBridgeFromAttachmentTransport &&
+          decodedImageTransport &&
+          !decodedImageTransport.error &&
+          msgWrapper
+        ) {
+          try {
+            bridgeMediaPreview = mediaToBridgeMod.getBridgeFromAttachmentTransport(
+              decodedImageTransport,
+              'Image',
+              msgWrapper
+            );
+          } catch (_) {}
+        }
+      }
+
+      if (vidMsg) {
+        const rawVidBytes = vidMsg?.payload ?? vidMsg?.video?.payload;
+        if (rawVidBytes && decodeProtoMod?.decodeProtobuf && mediaTransportPb?.VideoTransportSpec) {
+          try {
+            decodedVideoTransport = decodeProtoMod.decodeProtobuf(
+              mediaTransportPb.VideoTransportSpec,
+              rawVidBytes
+            );
+          } catch (_) {}
+        }
+        if (!decodedVideoTransport && deserMod?.DeserializedVideoMessage) {
+          try {
+            const wrappedInput = vidMsg.video ? vidMsg : { video: vidMsg };
+            const inst = new deserMod.DeserializedVideoMessage(wrappedInput);
+            decodedVideoTransport = inst.payload;
+          } catch (e) {
+            decodedVideoTransport = { error: String(e) };
+          }
+        }
+        if (
+          mediaToBridgeMod?.getBridgeFromAttachmentTransport &&
+          decodedVideoTransport &&
+          !decodedVideoTransport.error &&
+          msgWrapper
+        ) {
+          try {
+            bridgeMediaPreview = mediaToBridgeMod.getBridgeFromAttachmentTransport(
+              decodedVideoTransport,
+              'Video',
+              msgWrapper
+            );
+          } catch (_) {}
+        }
+      }
+
+      const fullMsgId =
+        msgWrapper?.getMsgId?.() ||
+        (rawMsgObj?.toplevelProtobuf
+          ? `${rawMsgObj.toplevelProtobuf.threadId}.${rawMsgObj.toplevelProtobuf.messageId}`
+          : null) ||
+        msgWrapper?.message?.messageId ||
+        null;
+      const threadId =
+        msgWrapper?.message?.threadId || rawMsgObj?.toplevelProtobuf?.threadId || null;
+      const senderId =
+        msgWrapper?.message?.senderId || rawMsgObj?.toplevelProtobuf?.senderId || null;
+      const timestampMs =
+        msgWrapper?.message?.timestampMs ||
+        rawMsgObj?.toplevelProtobuf?.timestampMs ||
+        Date.now();
+
+      const isVideo = Boolean(decodedVideoTransport && !decodedVideoTransport.error);
+      const validTransport = isVideo
+        ? decodedVideoTransport
+        : decodedImageTransport && !decodedImageTransport.error
+          ? decodedImageTransport
+          : null;
+
+      if (validTransport && fullMsgId) {
+        const waTransport =
+          validTransport?.integral?.transport || validTransport?.transport || validTransport;
+        const tIntegral = waTransport?.integral;
+        const tAncillary = waTransport?.ancillary;
+        const thumbObj = tAncillary?.thumbnail;
+        const meta = {
+          mediaType: isVideo ? 'video' : 'image',
+          senderId,
+          threadId,
+          timestamp: timestampMs
+        };
+
+        const thumbDataUrl = thumbObj?.jpegThumbnail
+          ? bytesToDataUrl(thumbObj.jpegThumbnail, 'image/jpeg')
+          : null;
+        if (thumbDataUrl) {
+          applyUnlockedViewOnceMedia(fullMsgId, [thumbDataUrl], meta);
+        }
+
+        resolveFullViewOnceMedia(fullMsgId, tIntegral, tAncillary, thumbObj, isVideo, meta);
+      }
+
+      return {
+        t: new Date().toISOString(),
+        msgId: fullMsgId,
+        threadId,
+        senderId,
+        topContentKeys: topContent ? Object.keys(topContent) : [],
+        topRaven: serializeUntruncated(topRaven, 0),
+        suppDecoded,
+        decodedImageTransport: serializeUntruncated(decodedImageTransport, 0),
+        decodedVideoTransport: serializeUntruncated(decodedVideoTransport, 0),
+        bridgeMediaPreview: serializeUntruncated(bridgeMediaPreview, 0)
+      };
+    } catch (e) {
+      return { error: String(e) };
+    }
+  }
+
+  async function inspectE2EERavenMessagesFromMps(fullMsgId) {
+    try {
+      if (!fullMsgId || !fullMsgId.includes('@msgr.')) return;
+      if (probedE2EEThreads.has(fullMsgId)) return;
+
+      const mpsMod = getFbModule('MpsOverBridge');
+      const wrapperMod = getFbModule('MpsMessageToBridgeWrapper');
+      if (!mpsMod || typeof mpsMod.mps !== 'function') return;
+
+      probedE2EEThreads.add(fullMsgId);
+      const lastDot = fullMsgId.lastIndexOf('.');
+      const threadId = fullMsgId.slice(0, lastDot);
+      const stanzaId = fullMsgId.slice(lastDot + 1);
+
+      const mpsInstance = mpsMod.mps();
+      let singleRes = await mpsInstance.loadMessage({
+        config: { shouldFetchSupplementals: true, strategy: 'local-first' },
+        debug: { purpose: 'reply-fetch-local' },
+        messageId: stanzaId,
+        threadId
+      });
+      if (!singleRes?.success || !singleRes?.value) {
+        singleRes = await mpsInstance.loadMessage({
+          config: { shouldFetchSupplementals: true, useMessageVisibility: true },
+          debug: { purpose: 'load-more' },
+          messageId: stanzaId,
+          threadId
+        });
+      }
+
+      let listRes = null;
+      const threadListKey = `thread_list_${threadId}`;
+      if (!probedE2EEThreads.has(threadListKey)) {
+        probedE2EEThreads.add(threadListKey);
+        listRes = await mpsInstance.loadMessages({
+          config: { shouldFetchSupplementals: true, useMessageVisibility: true },
+          debug: { purpose: 'load-more' },
+          direction: 'desc',
+          from: [Date.now() + 86400000, stanzaId],
+          numMessages: 25,
+          threadId
+        });
+      }
+
+      const rawMsgs = [];
+      if (singleRes?.value?.toplevelProtobuf) {
+        rawMsgs.push(singleRes.value);
+      } else if (singleRes?.value?.message?.toplevelProtobuf) {
+        rawMsgs.push(singleRes.value.message);
+      }
+      if (Array.isArray(listRes?.value?.messages)) {
+        for (const m of listRes.value.messages) {
+          if (m?.toplevelProtobuf) rawMsgs.push(m);
+        }
+      }
+
+      const extractedItems = [];
+      for (const rawMsg of rawMsgs) {
+        try {
+          const w = wrapperMod?.MpsMessageToBridgeWrapper?.fromTopLevel
+            ? wrapperMod.MpsMessageToBridgeWrapper.fromTopLevel(rawMsg.toplevelProtobuf)
+            : null;
+          const ravenInfo = decodeRavenFromProtobufWrapper(
+            w,
+            rawMsg.supplementalProtobufs,
+            rawMsg
+          );
+          if (ravenInfo) {
+            extractedItems.push(ravenInfo);
+          }
+        } catch (err) {
+          extractedItems.push({ error: String(err) });
+        }
+      }
+
+      deepUnsupportedInspector.e2eeRavenExtracted.push({
+        t: new Date().toISOString(),
+        source: 'mpsOverBridgeProbe',
+        fullMsgId,
+        threadId,
+        stanzaId,
+        singleResSuccess: singleRes?.success,
+        singleResKeys: singleRes?.value ? Object.keys(singleRes.value) : null,
+        listResSuccess: listRes?.success,
+        listCount: listRes?.value?.messages?.length ?? 0,
+        extractedItems,
+        rawSingleSample: serializeUntruncated(singleRes, 0)
+      });
+      if (deepUnsupportedInspector.e2eeRavenExtracted.length > 25) {
+        deepUnsupportedInspector.e2eeRavenExtracted.shift();
+      }
+    } catch (e) {
+      deepUnsupportedInspector.e2eeRavenExtracted.push({
+        t: new Date().toISOString(),
+        source: 'mpsOverBridgeProbeError',
+        fullMsgId,
+        error: String(e)
+      });
+    }
+  }
 
   let currentDefFunc = window.__d;
   function wrapDefineFn(origD) {
@@ -1241,24 +1870,68 @@
           !interestingModuleSet.has(moduleName)
         ) {
           interestingModuleSet.add(moduleName);
-          if (deepUnsupportedInspector.interestingModuleNames.length < 400) {
+          if (deepUnsupportedInspector.interestingModuleNames.length < 1000) {
             deepUnsupportedInspector.interestingModuleNames.push(moduleName);
           }
         }
 
-        if (typeof factory === 'function' && SAFE_TARGET_MODULE_REGEX.test(moduleName)) {
+        if (
+          typeof factory === 'function' &&
+          SOURCE_CAPTURE_MODULE_REGEX.test(moduleName) &&
+          !deepUnsupportedInspector.moduleSources[moduleName]
+        ) {
+          try {
+            deepUnsupportedInspector.moduleSources[moduleName] = {
+              deps: Array.isArray(deps) ? deps : [],
+              code: Function.prototype.toString.call(factory).slice(0, 12000)
+            };
+          } catch (_) {}
+        }
+
+        const shouldSafeWrap = SAFE_TARGET_MODULE_REGEX.test(moduleName);
+        const shouldPassiveCapture = PASSIVE_EXPORT_CAPTURE_REGEX.test(moduleName);
+
+        if (typeof factory === 'function' && (shouldSafeWrap || shouldPassiveCapture)) {
           const origFactory = factory;
           factory = function (g, r, i, a, m, e, d) {
+            if (!fbRequireFn && typeof i === 'function') {
+              fbRequireFn = i;
+            }
+            if (!fbImportNamespaceFn && typeof a === 'function') {
+              fbImportNamespaceFn = a;
+            }
             const ret = origFactory.apply(this, arguments);
             try {
-              if (m && m.exports) {
-                m.exports = instrumentFacebookModule(moduleName, m.exports);
-              } else if (e) {
-                instrumentFacebookModule(moduleName, e);
+              const hasD = d && typeof d === 'object' && Object.keys(d).length > 0;
+              const hasM =
+                m &&
+                m.exports !== undefined &&
+                m.exports !== null &&
+                (typeof m.exports !== 'object' || Object.keys(m.exports).length > 0);
+              const hasE = e && typeof e === 'object' && Object.keys(e).length > 0;
+              const exp = hasD ? d : hasM ? m.exports : hasE ? e : d || (m && m.exports) || e;
+
+              if (exp && shouldPassiveCapture) {
+                passiveModuleExports.set(moduleName, exp);
+              }
+              if (shouldSafeWrap) {
+                if (hasD) {
+                  instrumentFacebookModule(moduleName, d);
+                } else if (hasM) {
+                  m.exports = instrumentFacebookModule(moduleName, m.exports);
+                } else if (hasE) {
+                  instrumentFacebookModule(moduleName, e);
+                }
               }
             } catch (_) {}
             return ret;
           };
+          try {
+            Object.defineProperty(factory, 'length', {
+              value: origFactory.length,
+              configurable: true
+            });
+          } catch (_) {}
         }
       }
       return origD.apply(this, arguments);
@@ -1571,12 +2244,21 @@
           if (isUnsentFlag) {
             triggerMessageUnsent(msgId, { senderId, threadId, senderName, source: context.source });
           } else {
-            const cleanText =
+            let cleanText =
               typeof textContent === 'string' &&
               textContent.trim().length > 0 &&
               !isTechnicalString(textContent)
                 ? textContent.trim()
                 : '';
+
+            if (!cleanText && obj.hotEmojiSize !== undefined && obj.hotEmojiSize !== null) {
+              const hotSize = Array.isArray(obj.hotEmojiSize)
+                ? Number(parseLSInt64(obj.hotEmojiSize))
+                : Number(obj.hotEmojiSize);
+              if (hotSize >= 1 && hotSize <= 3) {
+                cleanText = '👍';
+              }
+            }
 
             const attachments = [];
             const attList = obj.attachments || obj.blobAttachments || obj.media || [];
@@ -2174,6 +2856,27 @@
     return urls;
   }
 
+  function isDomRowViewOnceBubble(rowEl) {
+    if (!rowEl || !(rowEl instanceof HTMLElement)) return false;
+    if (rowEl.dataset.fbViewOnceRow === 'true') return true;
+    const nodes = rowEl.querySelectorAll('span, div');
+    for (const el of nodes) {
+      if (el.childElementCount > 0) continue;
+      const txt = (el.textContent || '').trim();
+      if (
+        /^(Ảnh|Video|Photo|Tin nhắn ảnh xem 1 lần|Tin nhắn video xem 1 lần|View once photo|View once video)$/i.test(
+          txt
+        )
+      ) {
+        const pill = el.closest('.x6s0dn4.x78zum5') || el.parentElement?.parentElement;
+        if (pill && pill.querySelector('svg')) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   function scanReactFiberOnChatRows() {
     if (!document.body) return;
     let updatedCount = 0;
@@ -2197,15 +2900,32 @@
           delete rowEl.dataset.fbFiberMedia;
           delete rowEl.dataset.fbUnsupportedLogged;
           delete rowEl.dataset.fbUnsupportedUnlocked;
+          delete rowEl.dataset.fbViewOnceRow;
         }
         rowEl.dataset.fbMsgId = msgId;
         updatedCount++;
       }
 
       const rawRowText = (rowEl.innerText || rowEl.textContent || '').trim();
-      const isUnsupportedRow = UNSUPPORTED_ATTACHMENT_DOM_REGEX.test(rawRowText);
+      const isViewOnceBubble = isDomRowViewOnceBubble(rowEl);
+      if (isViewOnceBubble && rowEl.dataset.fbViewOnceRow !== 'true') {
+        rowEl.dataset.fbViewOnceRow = 'true';
+        updatedCount++;
+      }
+      const isUnsupportedRow = isViewOnceBubble || UNSUPPORTED_ATTACHMENT_DOM_REGEX.test(rawRowText);
+      const effectiveId = msgId || currentId || rowEl.dataset.messageId || '';
+      if (effectiveId && effectiveId.includes('@msgr.')) {
+        inspectE2EERavenMessagesFromMps(effectiveId);
+      }
 
       const fiberMediaUrls = findFiberPlayableMediaForRow(rowEl, isUnsupportedRow);
+      if (effectiveId && unlockedViewOnceMediaMap.has(effectiveId)) {
+        for (const uUrl of unlockedViewOnceMediaMap.get(effectiveId)) {
+          if (uUrl && !fiberMediaUrls.includes(uUrl)) {
+            fiberMediaUrls.unshift(uUrl);
+          }
+        }
+      }
       if (fiberMediaUrls.length > 0) {
         const serialized = JSON.stringify(fiberMediaUrls);
         if (rowEl.dataset.fbFiberMedia !== serialized) {

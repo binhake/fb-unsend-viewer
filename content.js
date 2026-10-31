@@ -99,7 +99,7 @@
     /^(Đã gửi|Đã nhận|Đã xem|Đang gửi|Đang viết|Đang hoạt động|Hoạt động\s+.+\s+trước|Active now|Active\s+.+\s+ago|Sent|Delivered|Seen|Sending|Typing|Enter|Nhấn Enter để gửi|Được mã hóa đầu cuối|End-to-end encrypted|Trả lời|Reply|Chuyển tiếp|Forward|Xem thêm|See more|Bạn đã chuyển tiếp một tin nhắn|\d{1,2}:\d{2}(\s?[AP]M)?(\s+T\d|\s+CN)?)$/i;
 
   const UNSUPPORTED_ATTACHMENT_REGEX =
-    /(File đính kèm không được hỗ trợ|Tin nhắn này không hiển thị trên ứng dụng này|Unsupported attachment|This message isn't available on this app|Chỉ có thể xem trên ứng dụng di động|View once photo|View once video|Ảnh xem một lần|Video xem một lần)/i;
+    /(File đính kèm không được hỗ trợ|Tin nhắn này không hiển thị trên ứng dụng này|Unsupported attachment|This message isn't available on this app|Chỉ có thể xem trên ứng dụng di động|View once photo|View once video|Ảnh xem một lần|Video xem một lần|Tin nhắn ảnh xem 1 lần|Tin nhắn video xem 1 lần|Hãy dùng ứng dụng Messenger trên di động để xem)/i;
 
   function isAttachmentFilenameText(text) {
     if (!text || typeof text !== 'string') return false;
@@ -1563,22 +1563,59 @@
     });
 
     if (texts.length === 0) {
-      rowEl.querySelectorAll('img[src*="emoji.php"][alt]').forEach((emojiImg) => {
+      rowEl.querySelectorAll('img[alt]').forEach((emojiImg) => {
         if (
           emojiImg.closest(
-            '[aria-label*="cảm xúc"], [aria-label*="reaction"], [role="button"][tabindex="0"], .fb-unsend-community-restored-list'
+            '[aria-label*="cảm xúc"], [aria-label*="reaction"], [role="button"][tabindex="0"], .fb-unsend-community-restored-list, .fb-unsend-media-list, .fb-unsend-unlocked-media'
           )
         ) {
           return;
         }
         const alt = (emojiImg.getAttribute('alt') || '').trim();
-        if (alt && !texts.includes(alt)) {
+        if (!alt || /^(Đã xem|Seen by|Hình ảnh|Ảnh|Image|Photo)$/i.test(alt)) return;
+        if (rowSenderName && alt.toLowerCase() === rowSenderName.toLowerCase()) return;
+        const src = emojiImg.getAttribute('src') || '';
+        const isEmojiAlt =
+          src.includes('emoji.php') ||
+          (alt.length <= 12 && /[\p{Emoji_Presentation}\p{Extended_Pictographic}]/u.test(alt));
+        if (isEmojiAlt && !texts.includes(alt)) {
           texts.push(alt);
         }
       });
     }
 
-    let isUnsupportedAttachmentRow = false;
+    if (texts.length === 0) {
+      const svgs = rowEl.querySelectorAll('svg');
+      for (const svgEl of svgs) {
+        if (
+          svgEl.closest(
+            '[role="button"], [aria-haspopup], a[role="link"], .fb-unsend-community-restored-list, .fb-unsend-media-list, .fb-unsend-unlocked-media, .x6s0dn4.x78zum5'
+          )
+        ) {
+          continue;
+        }
+        const ariaLabel = (
+          svgEl.getAttribute('aria-label') ||
+          svgEl.parentElement?.getAttribute('aria-label') ||
+          ''
+        ).trim();
+        if (/(giơ ngón tay cái|ngón tay cái|thumbs up)/i.test(ariaLabel)) {
+          texts.push('👍');
+          break;
+        }
+        const rect = svgEl.getBoundingClientRect();
+        const attrW = parseFloat(svgEl.getAttribute('width') || '0') || 0;
+        const attrH = parseFloat(svgEl.getAttribute('height') || '0') || 0;
+        const w = Math.max(rect.width, attrW);
+        const h = Math.max(rect.height, attrH);
+        if (w >= 26 && h >= 26 && w <= 160 && h <= 160) {
+          texts.push('👍');
+          break;
+        }
+      }
+    }
+
+    let isUnsupportedAttachmentRow = rowEl.dataset?.fbViewOnceRow === 'true';
     let unsupportedCardEl = null;
     const unsupportedLines = [];
     const candidateFallbackNodes = rowEl.querySelectorAll('span[dir="auto"], span, div');
@@ -1597,6 +1634,17 @@
         isUnsupportedAttachmentRow = true;
         if (!unsupportedCardEl) {
           unsupportedCardEl = el.parentElement || el;
+        }
+      } else if (/^(Ảnh|Video|Photo)$/i.test(lineTxt)) {
+        const pillContainer = el.closest('.x6s0dn4.x78zum5') || el.parentElement?.parentElement;
+        if (pillContainer && pillContainer.querySelector('svg')) {
+          isUnsupportedAttachmentRow = true;
+          if (!unsupportedCardEl) {
+            unsupportedCardEl = pillContainer;
+          }
+          if (!unsupportedLines.includes(`① ${lineTxt}`)) {
+            unsupportedLines.push(`① ${lineTxt}`);
+          }
         }
       }
     }
@@ -2920,14 +2968,39 @@
 
     const bubbleEl = findOriginalBubbleElement(unsupportedCardEl, rowEl);
     const targetParent = bubbleEl || unsupportedCardEl.parentElement || unsupportedCardEl;
-    if (targetParent.querySelector('.fb-unsend-unlocked-media')) return;
+    const serialized = JSON.stringify(cleanAttachments);
+    let mediaContainer = targetParent.querySelector('.fb-unsend-unlocked-media');
+    if (mediaContainer) {
+      if (mediaContainer.dataset.fbRenderedMedia === serialized) return;
+      mediaContainer.textContent = '';
+    } else {
+      mediaContainer = document.createElement('div');
+      mediaContainer.className = 'fb-unsend-media-list fb-unsend-unlocked-media';
+      targetParent.appendChild(mediaContainer);
+    }
 
-    const mediaContainer = document.createElement('div');
-    mediaContainer.className = 'fb-unsend-media-list fb-unsend-unlocked-media';
+    mediaContainer.dataset.fbRenderedMedia = serialized;
     cleanAttachments.forEach((url) => {
       mediaContainer.appendChild(createRestoredMediaElement(url, false));
     });
-    targetParent.appendChild(mediaContainer);
+
+    if (!targetParent.dataset.fbViewOnceClickBound) {
+      targetParent.dataset.fbViewOnceClickBound = 'true';
+      targetParent.style.cursor = 'pointer';
+      targetParent.title = 'Nhấn để xem ảnh/video';
+      targetParent.addEventListener('click', (e) => {
+        if (e.target.closest('video, audio, a, button')) return;
+        const currentMediaStr = mediaContainer.dataset.fbRenderedMedia;
+        if (!currentMediaStr) return;
+        try {
+          const urls = JSON.parse(currentMediaStr);
+          if (Array.isArray(urls) && urls[0] && getAttachmentMediaType(urls[0]) === 'image') {
+            e.stopPropagation();
+            openImageLightbox(urls[0]);
+          }
+        } catch (_) {}
+      });
+    }
 
     dlog('UNSUPPORTED-MEDIA-UNLOCKED', '#00b894', 'Đã bung hiển thị media ẩn từ tin nhắn không hỗ trợ:', {
       messageId: getRowMessageId(rowEl),
