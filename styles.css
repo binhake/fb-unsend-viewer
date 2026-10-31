@@ -47,7 +47,7 @@
   border-radius: 12px;
   object-fit: cover;
   cursor: zoom-in;
-  border: 1px solid var(--fbu-border);
+  border: none;
   transition: transform 0.18s ease, filter 0.18s ease;
 }
 
@@ -68,7 +68,7 @@
   max-width: 240px;
   max-height: 220px;
   border-radius: 12px;
-  border: 1px solid var(--fbu-border);
+  border: none;
   background: #000;
   outline: none;
 }
