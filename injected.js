@@ -181,7 +181,7 @@
     }
     if (depth >= 7) return Array.isArray(val) ? `[Array(${val.length})]` : '[Object]';
     if (Array.isArray(val)) {
-      return val.slice(0, 80).map((item) => serializeUntruncated(item, depth + 1));
+      return val.slice(0, 150).map((item) => serializeUntruncated(item, depth + 1));
     }
     if (typeof val === 'object') {
       const out = {};
@@ -3000,11 +3000,66 @@
           const lsVersionMod = getFbModule('LSVersion');
           const threadCapMod = getFbModule('MWLSThreadCapabilities');
           const partCapMod = getFbModule('LSComputeParticipantCapabilities');
+          const targetInspectMods = [
+            'LSIssueAttachmentRestoreTask',
+            'LSUpsertAttachmentRange',
+            'LSUpsertAttachmentRangeStoredProcedure',
+            'LSIssueFetchThreadCapabilitiesTask',
+            'LSTaskSerializerSyncThreadCapabilities',
+            'MessengerAttachmentTransformer.bs',
+            'MessengerStoryAttachmentTransformer.bs',
+            'LSInsertAttachment',
+            'LSInsertBlobAttachment',
+            'LSInsertXmaAttachment',
+            'LSMediaUrlAttachment',
+            'LSPlatformClientSingleton',
+            'LSDatabaseSingleton'
+          ];
+          for (const mName of deepUnsupportedInspector.interestingModuleNames) {
+            if (
+              /Restore|UpsertAttachment|Capability|SyncTask|Transformer|Ephemeral|ViewOnce|Unsupported/i.test(
+                mName
+              ) &&
+              !targetInspectMods.includes(mName)
+            ) {
+              targetInspectMods.push(mName);
+            }
+          }
+          const restoreAndAttachmentModules = {};
+          for (const mName of targetInspectMods) {
+            try {
+              const mod = getFbModule(mName);
+              if (!mod) continue;
+              if (typeof mod === 'function') {
+                restoreAndAttachmentModules[mName] = {
+                  type: 'function',
+                  sprocName: mod.__sproc_name__ || null,
+                  tables: mod.__tables__ || null,
+                  source: Function.prototype.toString.call(mod).slice(0, 12000)
+                };
+              } else if (typeof mod === 'object') {
+                const objInfo = {};
+                for (const k of Object.keys(mod).slice(0, 30)) {
+                  const v = mod[k];
+                  objInfo[k] =
+                    typeof v === 'function'
+                      ? Function.prototype.toString.call(v).slice(0, 6000)
+                      : serializeUntruncated(v, 1);
+                }
+                restoreAndAttachmentModules[mName] = {
+                  type: 'object',
+                  keys: Object.keys(mod),
+                  objInfo
+                };
+              }
+            } catch (_) {}
+          }
           deepUnsupportedInspector.syncParamsInspect = {
             syncParams: serializeUntruncated(syncParamsMod, 0),
             lsVersion: serializeUntruncated(lsVersionMod, 0),
             threadCap: serializeUntruncated(threadCapMod, 0),
-            partCap: serializeUntruncated(partCapMod, 0)
+            partCap: serializeUntruncated(partCapMod, 0),
+            restoreAndAttachmentModules
           };
         } catch (_) {}
         emitToContentScript('FB_MAIN_DEBUG_DUMP', {
