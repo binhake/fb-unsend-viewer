@@ -69,6 +69,128 @@
   let lastE2EEMessageId = null;
   let mawUnvaultFn = null;
 
+  const deepUnsupportedInspector = {
+    wsSentFrames: [],
+    wsReceivedRawFrames: [],
+    graphqlSyncRequests: [],
+    graphqlInterestingResponses: [],
+    interestingModuleNames: [],
+    recentLsProcedureRing: [],
+    unsupportedCallSnapshots: [],
+    activeProbes: [],
+    moduleSources: {}
+  };
+  const interestingModuleSet = new Set();
+  const capturedModuleExports = new Map();
+  const probedMessageIds = new Set();
+
+  function serializeUntruncated(val, depth = 0) {
+    if (val === null || val === undefined) return val;
+    if (typeof val === 'string') {
+      return val.length > 16000 ? `${val.slice(0, 16000)}... [len=${val.length}]` : unvaultString(val);
+    }
+    if (typeof val === 'number' || typeof val === 'boolean') return val;
+    if (typeof val === 'function') return `[Function: ${val.name || 'anonymous'}]`;
+    if (depth >= 4) return Array.isArray(val) ? `[Array(${val.length})]` : '[Object]';
+    if (Array.isArray(val)) {
+      return val.slice(0, 80).map((item) => serializeUntruncated(item, depth + 1));
+    }
+    if (typeof val === 'object') {
+      const out = {};
+      for (const k of Object.keys(val).slice(0, 60)) {
+        try {
+          out[k] = serializeUntruncated(val[k], depth + 1);
+        } catch (_) {}
+      }
+      return out;
+    }
+    return String(val);
+  }
+
+  async function probeUnsupportedMessageData(info) {
+    const { messageId, otid, threadId, senderId } = info || {};
+    const probeKey = messageId || otid || 'unknown';
+    if (probedMessageIds.has(probeKey)) return;
+    probedMessageIds.add(probeKey);
+
+    const probeEntry = {
+      t: new Date().toISOString(),
+      messageId,
+      otid,
+      threadId,
+      senderId,
+      mediaFallbackChecks: [],
+      requireModuleInspect: {}
+    };
+    deepUnsupportedInspector.activeProbes.push(probeEntry);
+    if (deepUnsupportedInspector.activeProbes.length > 15) {
+      deepUnsupportedInspector.activeProbes.shift();
+    }
+
+    try {
+      for (const [modName, exp] of capturedModuleExports.entries()) {
+        try {
+          if (!exp) continue;
+          if (typeof exp === 'function') {
+            probeEntry.requireModuleInspect[modName] = {
+              type: 'function',
+              source: Function.prototype.toString.call(exp).slice(0, 4000)
+            };
+          } else if (typeof exp === 'object') {
+            const summary = {};
+            for (const k of Object.keys(exp).slice(0, 25)) {
+              const v = exp[k];
+              summary[k] =
+                typeof v === 'function'
+                  ? Function.prototype.toString.call(v).slice(0, 2500)
+                  : serializeUntruncated(v, 1);
+            }
+            probeEntry.requireModuleInspect[modName] = {
+              type: 'object',
+              keys: Object.keys(exp),
+              summary
+            };
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    const candidateEntities = [otid, messageId ? messageId.replace(/^mid\.\$/, '') : ''].filter(Boolean);
+    const entityTypes = [1, 2, 4, 8];
+    for (const entityId of candidateEntities) {
+      for (const et of entityTypes) {
+        const url = `/messaging/lightspeed/media_fallback/?entity_id=${encodeURIComponent(
+          entityId
+        )}&entity_type=${et}`;
+        try {
+          const resp = await window.fetch(url, {
+            method: 'GET',
+            credentials: 'include'
+          });
+          const contentType = resp.headers.get('content-type') || '';
+          let bodyPreview = '';
+          if (/json|text|xml|html/i.test(contentType)) {
+            const txt = await resp.text();
+            bodyPreview = txt.slice(0, 600);
+          }
+          probeEntry.mediaFallbackChecks.push({
+            url,
+            status: resp.status,
+            redirected: resp.redirected,
+            finalUrl: resp.url,
+            contentType,
+            bodyPreview
+          });
+        } catch (err) {
+          probeEntry.mediaFallbackChecks.push({
+            url,
+            error: String(err?.message || err)
+          });
+        }
+      }
+    }
+  }
+
   dlog('INIT', '#00a8ff', 'injected.js đã khởi tạo trong MAIN world tại', location.href);
 
   window.__FB_UNSEND_MAIN_STATE__ = {
@@ -924,6 +1046,14 @@
               ? detailParts.slice(0, 2).join(' — ')
               : 'File đính kèm không được hỗ trợ — Tin nhắn này không hiển thị trên ứng dụng này';
           combinedText = bodyText.startsWith('⚠️') ? bodyText : `⚠️ ${bodyText}`;
+          const candidateOtid =
+            [...altIds, ...(savedMeta?.altIds || [])].find((id) => /^\d{15,22}$/.test(id)) || '';
+          probeUnsupportedMessageData({
+            messageId: resolvedId,
+            otid: candidateOtid,
+            threadId: fallbackThreadId,
+            senderId: fallbackSenderId
+          });
         } else {
           combinedText =
             isXmaOrAttachmentMod && uniqueTexts.length > 1
@@ -978,6 +1108,19 @@
       return origFn;
     }
 
+    try {
+      if (
+        /Attachment|Ephemeral|ViewOnce|Unsupported|LightspeedRequest|SyncParams|Capabilit/i.test(
+          label
+        ) &&
+        !deepUnsupportedInspector.moduleSources[label]
+      ) {
+        deepUnsupportedInspector.moduleSources[label] = Function.prototype.toString
+          .call(origFn)
+          .slice(0, 5000);
+      }
+    } catch (_) {}
+
     const wrapped = function () {
       const args = Array.from(arguments);
       const ret = origFn.apply(this, arguments);
@@ -987,6 +1130,38 @@
             recordVaultMapping(args[0], ret);
           }
         } else {
+          deepUnsupportedInspector.recentLsProcedureRing.push({
+            t: Date.now(),
+            mod: label,
+            args: serializeUntruncated(args, 0)
+          });
+          if (deepUnsupportedInspector.recentLsProcedureRing.length > 80) {
+            deepUnsupportedInspector.recentLsProcedureRing.shift();
+          }
+
+          const hasUnsupportedMarker = args.some(
+            (a) =>
+              typeof a === 'string' &&
+              (a === 'unavailable' ||
+                a.startsWith('unsupportedmid.$') ||
+                /File đính kèm không được hỗ trợ|Tin nhắn không hiển thị/i.test(a))
+          );
+          if (hasUnsupportedMarker || /^LSInsertAttachment(\.|$)/i.test(label)) {
+            const stackStr = new Error().stack || '';
+            deepUnsupportedInspector.unsupportedCallSnapshots.push({
+              t: new Date().toISOString(),
+              mod: label,
+              fullArgs: serializeUntruncated(args, 0),
+              returnValue: serializeUntruncated(ret, 0),
+              stack: stackStr,
+              fnSource: Function.prototype.toString.call(origFn).slice(0, 5000),
+              precedingLsCalls: deepUnsupportedInspector.recentLsProcedureRing.slice(-35)
+            });
+            if (deepUnsupportedInspector.unsupportedCallSnapshots.length > 15) {
+              deepUnsupportedInspector.unsupportedCallSnapshots.shift();
+            }
+          }
+
           queueMicrotask(() => {
             try {
               inspectInternalProcedureCall(label, args, ret);
@@ -1000,6 +1175,22 @@
     try {
       wrapped.prototype = origFn.prototype;
       Object.assign(wrapped, origFn);
+      Object.defineProperty(wrapped, 'length', {
+        value: origFn.length,
+        configurable: true
+      });
+      if (origFn.name) {
+        Object.defineProperty(wrapped, 'name', {
+          value: origFn.name,
+          configurable: true
+        });
+      }
+      Object.defineProperty(wrapped, 'toString', {
+        value: function () {
+          return Function.prototype.toString.call(origFn);
+        },
+        configurable: true
+      });
       Object.defineProperty(wrapped, '__fbSafeWrapped', { value: true });
     } catch (_) {}
 
@@ -1010,6 +1201,7 @@
     if (!exportsObj) return exportsObj;
 
     try {
+      capturedModuleExports.set(moduleName, exportsObj);
       const isUnvaultMod = /^MAW(Vault|UnvaultTransform)$/i.test(moduleName);
 
       if (typeof exportsObj === 'function') {
@@ -1034,29 +1226,40 @@
   }
 
   const SAFE_TARGET_MODULE_REGEX =
-    /^(LS(UpsertMessage|DeleteThenInsertMessage|InsertMessage|ReplaceOptimisticMessage|DeleteMessage|DeleteMessageRequest|MarkMessageUnsent|HandleUnsendMessage|UpdateMessage|UpdateUnsentMessage.*|RetractMessage|RecallMessage|InsertBlobAttachment|InsertXmaAttachment|InsertStickerAttachment|InsertAttachment.*|UpsertAttachment.*|UpdateOrInsert.*Attachment.*|VerifyContactRowExists|UpdateOrInsertContact|UpsertContact|UpdateOrInsertThread|VerifyHybridThreadExists|UpsertThread)|MAW(UnvaultTransform|Vault|ThreadSnippetFor.*Msg|BridgeBuildThreadSnippet|.*Unsend.*|.*Delete.*Message.*|.*Attachment.*|.*Xma.*|.*Ephemeral.*|.*ViewOnce.*))$/i;
+    /^(LS(UpsertMessage|DeleteThenInsertMessage|InsertMessage|ReplaceOptimisticMessage|DeleteMessage|DeleteMessageRequest|MarkMessageUnsent|HandleUnsendMessage|UpdateMessage|InsertBlobAttachment|InsertAttachment|InsertXmaAttachment|InsertStickerAttachment|VerifyContactRowExists|UpdateOrInsertContact|UpsertContact|UpdateOrInsertThread|VerifyHybridThreadExists|UpsertThread)|MAW(UnvaultTransform|Vault|ThreadSnippetFor.*Msg|BridgeBuildThreadSnippet))$/i;
+
+  const INTERESTING_MODULE_NAME_REGEX =
+    /Attachment|Ephemeral|ViewOnce|Unsupported|MediaFallback|LightspeedRequest|LSPlatform|SyncParams|Capabilit|Xma|Raven/i;
 
   let currentDefFunc = window.__d;
   function wrapDefineFn(origD) {
     if (!origD || origD.__fbUnsendWrapped) return origD;
     const wrappedD = function (moduleName, deps, factory, _extra) {
-      if (
-        typeof moduleName === 'string' &&
-        typeof factory === 'function' &&
-        SAFE_TARGET_MODULE_REGEX.test(moduleName)
-      ) {
-        const origFactory = factory;
-        factory = function (g, r, i, a, m, e, d) {
-          const ret = origFactory.apply(this, arguments);
-          try {
-            if (m && m.exports) {
-              m.exports = instrumentFacebookModule(moduleName, m.exports);
-            } else if (e) {
-              instrumentFacebookModule(moduleName, e);
-            }
-          } catch (_) {}
-          return ret;
-        };
+      if (typeof moduleName === 'string') {
+        if (
+          INTERESTING_MODULE_NAME_REGEX.test(moduleName) &&
+          !interestingModuleSet.has(moduleName)
+        ) {
+          interestingModuleSet.add(moduleName);
+          if (deepUnsupportedInspector.interestingModuleNames.length < 400) {
+            deepUnsupportedInspector.interestingModuleNames.push(moduleName);
+          }
+        }
+
+        if (typeof factory === 'function' && SAFE_TARGET_MODULE_REGEX.test(moduleName)) {
+          const origFactory = factory;
+          factory = function (g, r, i, a, m, e, d) {
+            const ret = origFactory.apply(this, arguments);
+            try {
+              if (m && m.exports) {
+                m.exports = instrumentFacebookModule(moduleName, m.exports);
+              } else if (e) {
+                instrumentFacebookModule(moduleName, e);
+              }
+            } catch (_) {}
+            return ret;
+          };
+        }
       }
       return origD.apply(this, arguments);
     };
@@ -1470,9 +1673,12 @@
   function handleWebSocketFrame(data, wsUrl = '') {
     try {
       let decoded = '';
+      let byteLen = 0;
       if (typeof data === 'string') {
         decoded = data;
+        byteLen = data.length;
       } else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+        byteLen = data.byteLength || 0;
         decoded = safeDecodeBuffer(data);
       } else if (data instanceof Blob) {
         data
@@ -1480,6 +1686,33 @@
           .then((buf) => handleWebSocketFrame(buf, wsUrl))
           .catch(() => {});
         return;
+      }
+
+      if (decoded) {
+        const isAfterInit = Date.now() - PAGE_LOAD_TIME > INITIAL_SYNC_GRACE_MS;
+        const hasUnsupportedOrAttachment =
+          decoded.includes('unsupported') ||
+          decoded.includes('unavailable') ||
+          decoded.includes('File đính kèm') ||
+          decoded.includes('Tin nhắn không hiển thị') ||
+          decoded.includes('insertAttachment') ||
+          decoded.includes('insertBlobAttachment') ||
+          decoded.includes('insertXmaAttachment') ||
+          decoded.includes('ephemeral') ||
+          decoded.includes('view_once') ||
+          (isAfterInit && decoded.includes('mid.$'));
+
+        if (hasUnsupportedOrAttachment) {
+          deepUnsupportedInspector.wsReceivedRawFrames.push({
+            t: new Date().toISOString(),
+            ms: Date.now(),
+            byteLen,
+            decodedText: decoded.slice(0, 25000)
+          });
+          if (deepUnsupportedInspector.wsReceivedRawFrames.length > 35) {
+            deepUnsupportedInspector.wsReceivedRawFrames.shift();
+          }
+        }
       }
 
       if (
@@ -1495,6 +1728,100 @@
         extractJsonObjectsFromString(decoded);
       }
     } catch (_) {}
+  }
+
+  const origWsSend = OriginalWebSocket.prototype.send;
+  OriginalWebSocket.prototype.send = function (data) {
+    try {
+      let decoded = '';
+      let byteLen = 0;
+      if (typeof data === 'string') {
+        decoded = data;
+        byteLen = data.length;
+      } else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+        byteLen = data.byteLength || 0;
+        decoded = safeDecodeBuffer(data);
+      }
+      if (decoded) {
+        deepUnsupportedInspector.wsSentFrames.push({
+          t: new Date().toISOString(),
+          url: this.url || '',
+          byteLen,
+          decodedText: decoded.slice(0, 15000)
+        });
+        if (deepUnsupportedInspector.wsSentFrames.length > 40) {
+          deepUnsupportedInspector.wsSentFrames.shift();
+        }
+      }
+    } catch (_) {}
+    return origWsSend.apply(this, arguments);
+  };
+
+  if (window.XMLHttpRequest) {
+    const origXhrOpen = XMLHttpRequest.prototype.open;
+    const origXhrSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (method, url) {
+      this.__fbUnsendUrl = String(url || '');
+      this.__fbUnsendMethod = String(method || '');
+      return origXhrOpen.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function (body) {
+      try {
+        const url = this.__fbUnsendUrl || '';
+        const bodyStr = typeof body === 'string' ? body : '';
+        if (
+          bodyStr &&
+          (bodyStr.includes('LSPlatform') ||
+            bodyStr.includes('sync_params') ||
+            bodyStr.includes('request_payload') ||
+            bodyStr.includes('lightspeed'))
+        ) {
+          let decodedBody = bodyStr;
+          try {
+            decodedBody = decodeURIComponent(bodyStr);
+          } catch (_) {}
+          deepUnsupportedInspector.graphqlSyncRequests.push({
+            t: new Date().toISOString(),
+            url,
+            body: decodedBody.slice(0, 15000)
+          });
+          if (deepUnsupportedInspector.graphqlSyncRequests.length > 25) {
+            deepUnsupportedInspector.graphqlSyncRequests.shift();
+          }
+        }
+        this.addEventListener('load', function () {
+          try {
+            if (
+              (!this.responseType || this.responseType === 'text') &&
+              typeof this.responseText === 'string'
+            ) {
+              const rt = this.responseText;
+              if (
+                rt.includes('unsupportedmid.$') ||
+                rt.includes('File đính kèm không được hỗ trợ') ||
+                rt.includes('insertAttachment')
+              ) {
+                const idx =
+                  rt.indexOf('unsupportedmid.$') !== -1
+                    ? rt.indexOf('unsupportedmid.$')
+                    : rt.indexOf('insertAttachment');
+                const start = Math.max(0, idx - 1500);
+                deepUnsupportedInspector.graphqlInterestingResponses.push({
+                  t: new Date().toISOString(),
+                  url,
+                  totalLen: rt.length,
+                  excerpt: rt.slice(start, start + 12000)
+                });
+                if (deepUnsupportedInspector.graphqlInterestingResponses.length > 20) {
+                  deepUnsupportedInspector.graphqlInterestingResponses.shift();
+                }
+              }
+            }
+          } catch (_) {}
+        });
+      } catch (_) {}
+      return origXhrSend.apply(this, arguments);
+    };
   }
 
   window.WebSocket = function (url, protocols) {
@@ -1948,7 +2275,8 @@
           vaultMapSize: vaultMap.size,
           vaultMapSample: Array.from(vaultMap.entries()).slice(-100),
           hasMawUnvaultFn: Boolean(mawUnvaultFn),
-          fiberRowsInspect: buildUnsupportedAndRecentFiberDump()
+          fiberRowsInspect: buildUnsupportedAndRecentFiberDump(),
+          deepUnsupportedInspector
         });
       }
     }
