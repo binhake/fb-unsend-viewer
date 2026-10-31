@@ -99,7 +99,7 @@
     /^(Đã gửi|Đã nhận|Đã xem|Đang gửi|Đang viết|Đang hoạt động|Hoạt động\s+.+\s+trước|Active now|Active\s+.+\s+ago|Sent|Delivered|Seen|Sending|Typing|Enter|Nhấn Enter để gửi|Được mã hóa đầu cuối|End-to-end encrypted|Trả lời|Reply|Chuyển tiếp|Forward|Xem thêm|See more|Bạn đã chuyển tiếp một tin nhắn|\d{1,2}:\d{2}(\s?[AP]M)?(\s+T\d|\s+CN)?)$/i;
 
   const UNSUPPORTED_ATTACHMENT_REGEX =
-    /(File đính kèm không được hỗ trợ|Tin nhắn này không hiển thị trên ứng dụng này|Unsupported attachment|This message isn't available on this app|Chỉ có thể xem trên ứng dụng di động|View once photo|View once video|Ảnh xem một lần|Video xem một lần|Tin nhắn ảnh xem 1 lần|Tin nhắn video xem 1 lần|Hãy dùng ứng dụng Messenger trên di động để xem)/i;
+    /(File đính kèm không được hỗ trợ|Tin nhắn này không hiển thị trên ứng dụng này|Unsupported attachment|This message isn't available on this app|Chỉ có thể xem trên ứng dụng di động|chỉ có thể xem được 1 lần|chỉ có thể xem được một lần|Hãy xem trên ứng dụng di động|only be viewed once|View it on the mobile app|View once photo|View once video|Ảnh xem một lần|Video xem một lần|Tin nhắn ảnh xem 1 lần|Tin nhắn video xem 1 lần|Hãy dùng ứng dụng Messenger trên di động để xem)/i;
 
   function isAttachmentFilenameText(text) {
     if (!text || typeof text !== 'string') return false;
@@ -246,6 +246,19 @@
     if (!text || typeof text !== 'string') return '';
     const trimmed = text.trim();
     if (!trimmed) return '';
+    if (
+      /^(Video).*(chỉ có thể xem được (1|một) lần|only be viewed once)/i.test(trimmed)
+    ) {
+      return '① Video (Xem 1 lần)';
+    }
+    if (
+      /^(Ảnh|Hình ảnh|Photo).*(chỉ có thể xem được (1|một) lần|only be viewed once)/i.test(
+        trimmed
+      ) ||
+      /(chỉ có thể xem được (1|một) lần|only be viewed once)/i.test(trimmed)
+    ) {
+      return '① Ảnh (Xem 1 lần)';
+    }
     if (
       /unsupportedmid\.\$/i.test(trimmed) ||
       /^unavailable\s*—/i.test(trimmed) ||
@@ -1636,8 +1649,11 @@
           unsupportedCardEl = el.parentElement || el;
         }
       } else if (/^(Ảnh|Video|Photo)$/i.test(lineTxt)) {
-        const pillContainer = el.closest('.x6s0dn4.x78zum5') || el.parentElement?.parentElement;
-        if (pillContainer && pillContainer.querySelector('svg')) {
+        const pillContainer =
+          el.closest('.x6s0dn4.x78zum5') ||
+          el.closest('[role="button"], .x78zum5') ||
+          el.parentElement?.parentElement;
+        if (pillContainer && (pillContainer.querySelector('svg') || rowEl.querySelector('svg'))) {
           isUnsupportedAttachmentRow = true;
           if (!unsupportedCardEl) {
             unsupportedCardEl = pillContainer;
@@ -1647,6 +1663,14 @@
           }
         }
       }
+    }
+
+    if (isUnsupportedAttachmentRow && !unsupportedCardEl) {
+      unsupportedCardEl =
+        rowEl.querySelector('div[dir="auto"]') ||
+        rowEl.querySelector('.x6s0dn4.x78zum5') ||
+        rowEl.querySelector('[role="gridcell"]') ||
+        rowEl;
     }
 
     if (isUnsupportedAttachmentRow && unsupportedCardEl) {
@@ -2960,14 +2984,19 @@
   }
 
   function renderUnlockedUnsupportedMediaInDom(rowEl, unsupportedCardEl, attachments) {
-    if (!rowEl || !unsupportedCardEl || !Array.isArray(attachments) || attachments.length === 0) {
+    if (!rowEl || !Array.isArray(attachments) || attachments.length === 0) {
       return;
     }
     const cleanAttachments = sanitizeAttachmentsList(attachments);
     if (cleanAttachments.length === 0) return;
 
-    const bubbleEl = findOriginalBubbleElement(unsupportedCardEl, rowEl);
-    const targetParent = bubbleEl || unsupportedCardEl.parentElement || unsupportedCardEl;
+    const anchorEl =
+      unsupportedCardEl ||
+      rowEl.querySelector('div[dir="auto"]') ||
+      rowEl.querySelector('.x6s0dn4.x78zum5') ||
+      rowEl;
+    const bubbleEl = anchorEl !== rowEl ? findOriginalBubbleElement(anchorEl, rowEl) : rowEl;
+    const targetParent = bubbleEl || anchorEl.parentElement || anchorEl;
     const serialized = JSON.stringify(cleanAttachments);
     let mediaContainer = targetParent.querySelector('.fb-unsend-unlocked-media');
     if (mediaContainer) {

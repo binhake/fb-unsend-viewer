@@ -1761,7 +1761,7 @@
 
   async function inspectE2EERavenMessagesFromMps(fullMsgId) {
     try {
-      if (!fullMsgId || !fullMsgId.includes('@msgr.')) return;
+      if (!fullMsgId || !/@(msgr|g\.us)\./.test(fullMsgId)) return;
       if (probedE2EEThreads.has(fullMsgId)) return;
 
       const mpsMod = getFbModule('MpsOverBridge');
@@ -2681,7 +2681,7 @@
   }
 
   const UNSUPPORTED_ATTACHMENT_DOM_REGEX =
-    /File đính kèm không được hỗ trợ|Tin nhắn này không hiển thị trên ứng dụng này|Unsupported attachment|isn't available on this app|Chỉ có thể xem trên ứng dụng di động|View once photo|View once video|Ảnh xem một lần|Video xem một lần/i;
+    /File đính kèm không được hỗ trợ|Tin nhắn này không hiển thị trên ứng dụng này|Unsupported attachment|isn't available on this app|Chỉ có thể xem trên ứng dụng di động|chỉ có thể xem được 1 lần|chỉ có thể xem được một lần|Hãy xem trên ứng dụng di động|only be viewed once|View it on the mobile app|View once photo|View once video|Ảnh xem một lần|Video xem một lần/i;
 
   function isLikelyAvatarMediaUrl(url) {
     if (!url || typeof url !== 'string') return true;
@@ -2863,13 +2863,24 @@
     for (const el of nodes) {
       if (el.childElementCount > 0) continue;
       const txt = (el.textContent || '').trim();
+      if (!txt) continue;
+      if (
+        /(chỉ có thể xem được 1 lần|chỉ có thể xem được một lần|Hãy xem trên ứng dụng di động|only be viewed once|View it on the mobile app)/i.test(
+          txt
+        )
+      ) {
+        return true;
+      }
       if (
         /^(Ảnh|Video|Photo|Tin nhắn ảnh xem 1 lần|Tin nhắn video xem 1 lần|View once photo|View once video)$/i.test(
           txt
         )
       ) {
-        const pill = el.closest('.x6s0dn4.x78zum5') || el.parentElement?.parentElement;
-        if (pill && pill.querySelector('svg')) {
+        const pill =
+          el.closest('.x6s0dn4.x78zum5') ||
+          el.closest('[role="button"], .x78zum5') ||
+          el.parentElement?.parentElement;
+        if (pill && (pill.querySelector('svg') || rowEl.querySelector('svg'))) {
           return true;
         }
       }
@@ -2914,7 +2925,7 @@
       }
       const isUnsupportedRow = isViewOnceBubble || UNSUPPORTED_ATTACHMENT_DOM_REGEX.test(rawRowText);
       const effectiveId = msgId || currentId || rowEl.dataset.messageId || '';
-      if (effectiveId && effectiveId.includes('@msgr.')) {
+      if (effectiveId && /@(msgr|g\.us)\./.test(effectiveId)) {
         inspectE2EERavenMessagesFromMps(effectiveId);
       }
 
@@ -2984,6 +2995,18 @@
         scanReactFiberOnChatRows();
       } else if (event.data.type === 'REQUEST_MAIN_DEBUG_DUMP') {
         scanReactFiberOnChatRows();
+        try {
+          const syncParamsMod = getFbModule('LSPlatformMessengerSyncParams');
+          const lsVersionMod = getFbModule('LSVersion');
+          const threadCapMod = getFbModule('MWLSThreadCapabilities');
+          const partCapMod = getFbModule('LSComputeParticipantCapabilities');
+          deepUnsupportedInspector.syncParamsInspect = {
+            syncParams: serializeUntruncated(syncParamsMod, 0),
+            lsVersion: serializeUntruncated(lsVersionMod, 0),
+            threadCap: serializeUntruncated(threadCapMod, 0),
+            partCap: serializeUntruncated(partCapMod, 0)
+          };
+        } catch (_) {}
         emitToContentScript('FB_MAIN_DEBUG_DUMP', {
           mainLogs: mainLogBuffer,
           capturedMessages: Array.from(capturedMessages.values()).slice(-200).map((m) => serializeForLog(m, 0)),
