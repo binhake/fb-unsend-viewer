@@ -956,15 +956,17 @@ function enforceAuthorAttribution() {
     tampered = true;
     credit.setAttribute('href', AUTHOR_REPO_URL);
   }
-  credit.title = `Bản quyền thuộc về ${AUTHOR_HANDLE} — Nhấn để mở GitHub gốc`;
-  credit.hidden = false;
-  credit.style.setProperty('display', 'inline', 'important');
-  credit.style.setProperty('visibility', 'visible', 'important');
-  credit.style.setProperty('opacity', '1', 'important');
+  if (credit.hidden) {
+    tampered = true;
+    credit.hidden = false;
+  }
 
   const computed = window.getComputedStyle(credit);
   if (computed.display === 'none' || computed.visibility === 'hidden' || Number(computed.opacity) < 0.2) {
     tampered = true;
+    credit.style.setProperty('display', 'inline', 'important');
+    credit.style.setProperty('visibility', 'visible', 'important');
+    credit.style.setProperty('opacity', '1', 'important');
   }
 
   if (tampered) {
@@ -978,20 +980,6 @@ function init() {
     dom.versionTag.textContent = `v${chrome.runtime.getManifest().version}`;
   } catch (_) {}
   enforceAuthorAttribution();
-  const footer = document.querySelector('.app-footer');
-  if (footer && typeof MutationObserver !== 'undefined') {
-    let guarding = false;
-    const observer = new MutationObserver(function () {
-      if (guarding) return;
-      guarding = true;
-      try {
-        enforceAuthorAttribution();
-      } finally {
-        guarding = false;
-      }
-    });
-    observer.observe(footer, { childList: true, subtree: true, characterData: true, attributes: true });
-  }
   bindEvents();
   loadPopupData();
 }
