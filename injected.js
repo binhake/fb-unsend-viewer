@@ -1,3 +1,9 @@
+/**
+ * FB Unsend Message Viewer — injected.js
+ * Copyright (c) 2026 binhake (https://github.com/binhake/fb-unsend-viewer)
+ * Licensed under the Non-Commercial & Strict Attribution License.
+ * Removing author attribution ("binhake") or unauthorized commercial use is strictly prohibited.
+ */
 // injected.js - Theo dõi luồng dữ liệu Messenger/Lightspeed/E2EE và React Fiber (MAIN World)
 
 (function () {

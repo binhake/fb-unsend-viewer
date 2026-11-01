@@ -1,21 +1,108 @@
-MIT License
+FB Unsend Message Viewer — Non-Commercial & Strict Attribution License
+(Giấy phép Bản quyền Phi thương mại & Bắt buộc Ghi danh Tác giả)
 
-Copyright (c) 2026 binhake
+Copyright (c) 2026 binhake (https://github.com/binhake)
+Project Repository: https://github.com/binhake/fb-unsend-viewer
+All Rights Reserved except as explicitly granted below.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+================================================================================
+🇻🇳 BẢN TIẾNG VIỆT (VIETNAMESE VERSION)
+================================================================================
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Phần mềm, mã nguồn, giao diện và tài liệu đi kèm ("Phần mềm") thuộc quyền sở hữu
+trí tuệ và bản quyền duy nhất của tác giả: binhake (https://github.com/binhake).
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Bằng việc tải xuống, sao chép, cài đặt hoặc sử dụng Phần mềm này, bạn đồng ý tuân
+thủ tuyệt đối các điều khoản bắt buộc sau đây:
+
+1. PHẠM VI SỬ DỤNG CÁ NHÂN (PERSONAL & NON-COMMERCIAL USE ONLY)
+   - Bạn được phép tải xuống và cài đặt Phần mềm miễn phí chỉ cho mục đích sử dụng
+     cá nhân, phi thương mại.
+
+2. BẮT BUỘC GIỮ NGUYÊN TÊN TÁC GIẢ 100% (STRICT ATTRIBUTION & ANTI-PLAGIARISM)
+   - Mọi bản sao của Phần mềm (dù giữ nguyên hay có chỉnh sửa khi được phép) BẮT BUỘC
+     phải giữ nguyên 100%:
+     (a) Tên tác giả gốc "binhake" và liên kết đến kho lưu trữ gốc
+         (https://github.com/binhake/fb-unsend-viewer);
+     (b) Toàn bộ thông báo bản quyền trong tệp LICENSE, README.md, manifest.json
+         và ở phần đầu của tất cả các tệp mã nguồn;
+     (c) Nhãn hiển thị tác giả ("© binhake") trên giao diện người dùng (Popup UI).
+   - NGHIÊM CẤM mọi hành vi xóa, ẩn, làm mờ, thay thế tên tác giả "binhake" hoặc
+     tự nhận Phần mềm này (hoặc bất kỳ phần nào của Phần mềm) là do mình sáng tạo ra.
+
+3. NGHIÊM CẤM THƯƠNG MẠI HÓA KHI CHƯA ĐƯỢC PHÉP (NO UNAUTHORIZED COMMERCIAL USE)
+   - Khi chưa có sự đồng ý trước bằng văn bản từ tác giả binhake, NGHIÊM CẤM sử dụng
+     Phần mềm hoặc bất kỳ phần mã nguồn nào của Phần mềm cho mục đích thương mại hay
+     kinh doanh dưới mọi hình thức, bao gồm nhưng không giới hạn ở:
+     (a) Bán, cho thuê, thu phí cài đặt, thu phí kích hoạt (key/license), hoặc đóng
+         gói kèm sản phẩm/dịch vụ thương mại khác;
+     (b) Chèn quảng cáo, mã tiếp thị liên kết (affiliate), hoặc thu lợi nhuận trực tiếp
+         hay gián tiếp từ Phần mềm;
+     (c) Đăng tải lại Phần mềm lên Chrome Web Store, Microsoft Edge Add-ons, hoặc bất
+         kỳ kho ứng dụng/trang web phân phối nào khác dưới tên cá nhân hoặc tổ chức khác.
+   - ĐIỀU KHOẢN HỢP TÁC THƯƠNG MẠI: Bất kỳ cá nhân hoặc tổ chức nào muốn sử dụng Phần
+     mềm cho mục đích thương mại/kinh doanh BẮT BUỘC phải liên hệ trước với tác giả
+     binhake (qua https://github.com/binhake) để ký thỏa thuận cấp phép thương mại,
+     đảm bảo ghi danh tác giả và chia sẻ doanh thu (%) theo thỏa thuận với binhake.
+
+4. HỆ QUẢ PHÁP LÝ & THU HỒI QUYỀN SỬ DỤNG (TERMINATION & ENFORCEMENT)
+   - Nếu bạn vi phạm bất kỳ điều khoản nào trong Giấy phép này, mọi quyền sử dụng của
+     bạn sẽ chấm dứt ngay lập tức. Tác giả binhake có toàn quyền yêu cầu gỡ bỏ nội dung
+     vi phạm (DMCA Takedown trên GitHub, Google Chrome Web Store, Microsoft, Facebook...)
+     và yêu cầu bồi thường thiệt hại theo quy định của pháp luật về sở hữu trí tuệ.
+
+5. MIỄN TRỪ TRÁCH NHIỆM (DISCLAIMER OF WARRANTY)
+   - Phần mềm được cung cấp "NGUYÊN TRẠNG" ("AS IS"), không kèm theo bất kỳ bảo đảm nào.
+     Tác giả không chịu trách nhiệm cho bất kỳ thiệt hại hoặc rủi ro nào phát sinh từ
+     việc sử dụng Phần mềm.
+
+================================================================================
+🇬🇧 ENGLISH VERSION
+================================================================================
+
+This software, including all source code, user interface designs, and associated
+documentation files (the "Software"), is the exclusive intellectual property and
+copyright of binhake (https://github.com/binhake).
+
+By downloading, copying, installing, or using this Software, you agree to be
+strictly bound by the following terms and conditions (aligned with Creative Commons
+Attribution-NonCommercial-NoDerivatives 4.0 International — CC BY-NC-ND 4.0, with
+explicit commercial revenue-sharing and anti-plagiarism provisions):
+
+1. PERSONAL, NON-COMMERCIAL USE ONLY
+   - Permission is granted, free of charge, to download and use the Software solely
+     for personal, non-commercial purposes.
+
+2. MANDATORY 100% AUTHOR ATTRIBUTION (NO REMOVAL OR MISREPRESENTATION)
+   - All copies or permitted distributions of the Software MUST retain 100% of:
+     (a) The original author credit "binhake" and the official repository link
+         (https://github.com/binhake/fb-unsend-viewer);
+     (b) All copyright notices in LICENSE, README.md, manifest.json, and source
+         code file headers;
+     (c) The visible author attribution ("© binhake") inside the extension's UI.
+   - It is STRICTLY PROHIBITED to remove, obscure, alter, or replace the author's
+     name ("binhake"), or to claim ownership/authorship of this Software or any
+     derivative thereof.
+
+3. COMMERCIAL USE & REVENUE SHARING REQUIREMENT
+   - Without prior written permission and a formal Commercial Agreement from binhake,
+     you may NOT use, reproduce, package, distribute, or exploit this Software (in
+     whole or in part) for any commercial or monetary purpose, including:
+     (a) Selling, licensing, renting, paywalling, or bundling the Software with paid
+         products or services;
+     (b) Monetizing the Software via advertisements, sponsorships, or affiliate links;
+     (c) Publishing or redistributing the Software on the Chrome Web Store, Microsoft
+         Edge Add-ons, or any third-party marketplace under another name.
+   - Any commercial use REQUIRES explicit author attribution to binhake and a mutually
+     agreed revenue-sharing (%) or commercial licensing arrangement with binhake
+     (contact via https://github.com/binhake).
+
+4. TERMINATION & DMCA ENFORCEMENT
+   - Any breach of these terms automatically and immediately terminates all rights
+     granted herein. Unauthorized copies, rebranded forks, or commercial distributions
+     will be subject to immediate DMCA Takedown notices and legal enforcement.
+
+5. DISCLAIMER
+   - THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+     IMPLIED. IN NO EVENT SHALL THE AUTHOR (binhake) BE LIABLE FOR ANY CLAIM,
+     DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THE SOFTWARE.

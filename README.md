@@ -10,7 +10,7 @@
     <img src="https://img.shields.io/badge/Manifest-V3-2563eb?style=flat-square&logo=googlechrome&logoColor=white" alt="Manifest V3" />
     <img src="https://img.shields.io/badge/Version-1.2.4-7c3aed?style=flat-square" alt="Version 1.2.4" />
     <img src="https://img.shields.io/badge/Privacy-100%25%20Local-10b981?style=flat-square" alt="100% Local Privacy" />
-    <img src="https://img.shields.io/badge/License-MIT-f59e0b?style=flat-square" alt="License MIT" />
+    <img src="https://img.shields.io/badge/License-Non--Commercial%20(by%20binhake)-ef4444?style=flat-square" alt="License Non-Commercial (by binhake)" />
   </p>
 
   <p>
@@ -77,6 +77,16 @@ Nếu bạn gặp trường hợp tin nhắn bị gỡ chưa hiển thị đúng
 
 ---
 
+### 📄 Bản quyền & Giấy phép (License)
+
+Dự án thuộc quyền sở hữu trí tuệ và bản quyền của **[binhake](https://github.com/binhake)** — phát hành theo **[Giấy phép Phi thương mại & Bắt buộc Ghi danh Tác giả (Non-Commercial & Strict Attribution License)](LICENSE)**:
+
+- ✅ **Sử dụng cá nhân miễn phí**: Bạn được phép tải về và cài đặt sử dụng cho mục đích cá nhân, phi thương mại.
+- 🔒 **Bắt buộc giữ nguyên 100% tên tác giả**: Mọi bản sao bắt buộc phải giữ nguyên tên tác giả **`binhake`**, liên kết kho lưu trữ gốc và nhãn bản quyền trên giao diện (`© binhake`). **Nghiêm cấm** xóa tên tác giả, đổi tên nhận vơ hoặc mạo danh chủ sở hữu dưới mọi hình thức.
+- 🚫 **Nghiêm cấm thương mại hóa trái phép**: Không được phép bán, cho thuê, thu phí, gắn quảng cáo hoặc đăng tải lại lên các kho tiện ích (Chrome Web Store, Edge Add-ons...) khi chưa có sự đồng ý bằng văn bản và thỏa thuận chia sẻ quyền lợi/doanh thu (%) với tác giả **[binhake](https://github.com/binhake)**.
+
+---
+
 ## 🇬🇧 English
 
 ### ✨ Key Features
@@ -133,6 +143,10 @@ If an unsent message does not restore in the expected position due to a Facebook
 
 ---
 
-## 📄 License
+## 📄 License & Copyright
 
-This project is licensed under the [MIT License](LICENSE) © 2026 [binhake](https://github.com/binhake).
+Copyright © 2026 **[binhake](https://github.com/binhake)**. All rights reserved under the **[Non-Commercial & Strict Attribution License (CC BY-NC-ND 4.0 + Commercial Revenue-Sharing Clause)](LICENSE)**:
+
+- **Personal Use Only**: Free to download and use strictly for personal, non-commercial purposes.
+- **100% Mandatory Attribution**: You must retain 100% of the author's name (**`binhake`**), repository links, source code copyright headers, and in-app UI attribution (`© binhake`). Removing author credits or claiming this project as your own is strictly prohibited and subject to DMCA Takedown.
+- **No Commercial Use Without Agreement**: Selling, paywalling, monetizing, or redistributing this extension on any store/marketplace without prior written consent, explicit author attribution, and a revenue-sharing (%) agreement with **[binhake](https://github.com/binhake)** is strictly forbidden.

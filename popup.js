@@ -1,3 +1,9 @@
+/**
+ * FB Unsend Message Viewer — popup.js
+ * Copyright (c) 2026 binhake (https://github.com/binhake/fb-unsend-viewer)
+ * Licensed under the Non-Commercial & Strict Attribution License.
+ * Removing author attribution ("binhake") or unauthorized commercial use is strictly prohibited.
+ */
 // popup.js - Quản lý giao diện lịch sử tin nhắn thu hồi, bộ lọc, Xuất/Nhập Backup (JSON) và Lightbox
 
 // ===== Hằng số =====
@@ -616,6 +622,7 @@ function exportBackupJson() {
 
     const backupPayload = {
       app: 'FB Unsend Message Viewer',
+      author: 'binhake (https://github.com/binhake/fb-unsend-viewer)',
       schemaVersion: 4,
       exportedAt: now.toISOString(),
       unsentCount: unsent.length,
@@ -905,11 +912,86 @@ function bindEvents() {
   });
 }
 
+// Bảo vệ bản quyền tác giả gốc (binhake) trên giao diện và manifest
+const AUTHOR_HANDLE = [98, 105, 110, 104, 97, 107, 101].map(c => String.fromCharCode(c)).join('');
+const AUTHOR_REPO_URL = `https://github.com/${AUTHOR_HANDLE}/fb-unsend-viewer`;
+
+function enforceAuthorAttribution() {
+  let tampered = false;
+  try {
+    const manifest = chrome.runtime.getManifest();
+    if (!manifest.author || !String(manifest.author).toLowerCase().includes(AUTHOR_HANDLE)) {
+      tampered = true;
+    }
+  } catch (_) {}
+
+  const footer = document.querySelector('.app-footer');
+  if (!footer) return;
+
+  let meta = footer.querySelector('.footer-meta');
+  if (!meta) {
+    tampered = true;
+    meta = document.createElement('span');
+    meta.className = 'footer-meta';
+    footer.appendChild(meta);
+  }
+
+  let credit = document.getElementById('author-credit');
+  if (!credit || !meta.contains(credit)) {
+    tampered = true;
+    credit = document.createElement('a');
+    credit.id = 'author-credit';
+    credit.className = 'author-credit';
+    credit.target = '_blank';
+    credit.rel = 'noopener noreferrer';
+    meta.prepend(credit);
+  }
+
+  const expectedLabel = `© ${AUTHOR_HANDLE}`;
+  if ((credit.textContent || '').trim() !== expectedLabel) {
+    tampered = true;
+    credit.textContent = expectedLabel;
+  }
+  if (credit.getAttribute('href') !== AUTHOR_REPO_URL) {
+    tampered = true;
+    credit.setAttribute('href', AUTHOR_REPO_URL);
+  }
+  credit.title = `Bản quyền thuộc về ${AUTHOR_HANDLE} — Nhấn để mở GitHub gốc`;
+  credit.hidden = false;
+  credit.style.setProperty('display', 'inline', 'important');
+  credit.style.setProperty('visibility', 'visible', 'important');
+  credit.style.setProperty('opacity', '1', 'important');
+
+  const computed = window.getComputedStyle(credit);
+  if (computed.display === 'none' || computed.visibility === 'hidden' || Number(computed.opacity) < 0.2) {
+    tampered = true;
+  }
+
+  if (tampered) {
+    showStatus(`Bản quyền gốc thuộc về ${AUTHOR_HANDLE} (${AUTHOR_REPO_URL})`, true);
+  }
+}
+
 function init() {
   cacheDom();
   try {
     dom.versionTag.textContent = `v${chrome.runtime.getManifest().version}`;
   } catch (_) {}
+  enforceAuthorAttribution();
+  const footer = document.querySelector('.app-footer');
+  if (footer && typeof MutationObserver !== 'undefined') {
+    let guarding = false;
+    const observer = new MutationObserver(function () {
+      if (guarding) return;
+      guarding = true;
+      try {
+        enforceAuthorAttribution();
+      } finally {
+        guarding = false;
+      }
+    });
+    observer.observe(footer, { childList: true, subtree: true, characterData: true, attributes: true });
+  }
   bindEvents();
   loadPopupData();
 }

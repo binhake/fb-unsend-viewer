@@ -1,3 +1,9 @@
+/**
+ * FB Unsend Message Viewer — content.js
+ * Copyright (c) 2026 binhake (https://github.com/binhake/fb-unsend-viewer)
+ * Licensed under the Non-Commercial & Strict Attribution License.
+ * Removing author attribution ("binhake") or unauthorized commercial use is strictly prohibited.
+ */
 // content.js - Đồng bộ dữ liệu tin nhắn, lưu trữ cục bộ và khôi phục trực tiếp trên giao diện Facebook
 
 (function () {

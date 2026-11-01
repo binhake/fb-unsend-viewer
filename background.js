@@ -1,3 +1,9 @@
+/**
+ * FB Unsend Message Viewer — background.js
+ * Copyright (c) 2026 binhake (https://github.com/binhake/fb-unsend-viewer)
+ * Licensed under the Non-Commercial & Strict Attribution License.
+ * Removing author attribution ("binhake") or unauthorized commercial use is strictly prohibited.
+ */
 // background.js - Service Worker quản lý Badge thông báo tin nhắn thu hồi
 
 const STORAGE_KEY_UNREAD_COUNT = 'fb_unread_unsent_count_v2';

@@ -1,3 +1,9 @@
+/**
+ * FB Unsend Message Viewer — popup.css
+ * Copyright (c) 2026 binhake (https://github.com/binhake/fb-unsend-viewer)
+ * Licensed under the Non-Commercial & Strict Attribution License.
+ * Removing author attribution ("binhake") or unauthorized commercial use is strictly prohibited.
+ */
 /* popup.css - Giao diện popup quản lý & sao lưu tin nhắn bị gỡ trên Facebook */
 /* Phong cách bám theo giao diện Facebook (cùng bộ màu với fb-verified-badge) */
 
@@ -835,6 +841,28 @@ button {
   padding: 8px 16px 10px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.footer-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.author-credit {
+  color: var(--muted);
+  font-weight: 600;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.author-credit:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.footer-sep {
+  opacity: 0.6;
 }
 
 .version-tag {
