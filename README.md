@@ -42,6 +42,10 @@
   - 🎵 **Tin nhắn thoại (Voice / Audio clip)**: Tích hợp trình phát `<audio controls>` nghe lại trực tiếp ngay tại khung chat và trong Popup.
   - 🎬 **Video**: Tích hợp trình phát `<video controls>` xem và tải về trực tiếp.
   - 📎 **Tệp đính kèm & Liên kết xem trước (File / Link preview)**
+- **Mở khóa ảnh / video "Xem 1 lần" (View once)**:
+  - Xem trực tiếp trên trình duyệt máy tính các tin ảnh/video xem 1 lần mà Facebook thường chỉ cho xem trên ứng dụng di động.
+  - Hoạt động cả trong đoạn chat **mã hóa đầu cuối (E2EE)**, kể cả nhóm chat E2EE.
+  - Ảnh/video được hiện ngay tại bong bóng chat và lưu vào lịch sử Popup với nhãn `① Ảnh (Xem 1 lần)` / `① Video (Xem 1 lần)`.
 - **Hiển thị trực tiếp tại vị trí bị gỡ trên khung chat**:
   - Thay thế dòng báo *"đã thu hồi một tin nhắn"* bằng khung nội dung gốc kèm nhãn `[ĐÃ GỠ]`.
   - Bám đúng vị trí tin nhắn ngay cả sau khi tải lại trang (F5) thông qua thuật toán neo ngữ cảnh (`anchorText`, `prevAnchorText`, `nextAnchorText`) và thời gian thực.
@@ -112,6 +116,10 @@ Dự án thuộc quyền sở hữu trí tuệ và bản quyền của **[binhak
   - 🎵 **Voice Messages & Audio Clips**: Embedded `<audio controls>` player right inside the chat bubble and extension popup.
   - 🎬 **Videos**: Embedded `<video controls>` player with direct download option.
   - 📎 **File Attachments & Link Previews**
+- **Unlock "View Once" Photos & Videos**:
+  - View once photos/videos that Facebook normally only lets you open in the mobile app, right in your desktop browser.
+  - Works in **end-to-end encrypted (E2EE)** chats, including E2EE group chats.
+  - Media is shown directly in the chat bubble and saved to the popup history with a `① Ảnh (Xem 1 lần)` / `① Video (Xem 1 lần)` (view once photo / video) label.
 - **In-Place Chat DOM Restoration**:
   - Replaces the *"unsent a message"* placeholder directly inside the conversation with the original message content and an `[UNSENT]` badge.
   - Persists across page reloads (`F5`) using smart context-anchoring (`anchorText`, `prevAnchorText`, `nextAnchorText`) and timestamp matching.
