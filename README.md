@@ -14,6 +14,16 @@
   </p>
 
   <p>
+    <a href="https://github.com/binhake/fb-unsend-viewer/stargazers"><img src="https://img.shields.io/github/stars/binhake/fb-unsend-viewer?style=social" alt="GitHub stars" /></a>
+  </p>
+
+  <p>
+    ⭐ <strong>Nếu thấy hữu ích, hãy cho repo 1 star để mình có động lực maintain tiếp nhé!</strong><br/>
+    <em>If you find this useful, please give it a star ⭐</em><br/>
+    🐞 Gặp lỗi? <a href="https://github.com/binhake/fb-unsend-viewer/issues/new?template=bug_report.md">Tạo issue</a> / Found a bug? <a href="https://github.com/binhake/fb-unsend-viewer/issues/new?template=bug_report.md">Open an issue</a>
+  </p>
+
+  <p>
     <a href="#-tiếng-việt">🇻🇳 Tiếng Việt</a> •
     <a href="#-english">🇬🇧 English</a>
   </p>
@@ -73,7 +83,11 @@ Sau đó vào `chrome://extensions/` → Bật **Developer mode** → Chọn **L
 Nếu bạn gặp trường hợp tin nhắn bị gỡ chưa hiển thị đúng tên nhóm hoặc vị trí trên một giao diện Facebook mới:
 1. Tại tab Facebook đang mở, nhấn tổ hợp phím **`Alt + Shift + D`**.
 2. Trình duyệt sẽ tự động tải xuống tệp `fb-unsend-debug-<timestamp>.json` chứa thông tin cấu trúc DOM/WebSocket liên quan đến bộ nhớ đệm.
-3. Mở một [**Issue mới**](../../issues) trên GitHub và đính kèm tệp log này (hoặc ảnh chụp màn hình) để mình hỗ trợ xử lý nhanh nhất.
+3. Mở một [**Issue mới**](https://github.com/binhake/fb-unsend-viewer/issues/new?template=bug_report.md) trên GitHub (đã có sẵn mẫu báo lỗi, chỉ cần điền) và đính kèm tệp log này cùng ảnh chụp màn hình để mình hỗ trợ xử lý nhanh nhất.
+
+> ⚠️ Nhớ **che tên, avatar và nội dung tin nhắn riêng tư** trong ảnh chụp và tệp log trước khi đăng lên issue.
+>
+> 💡 Trước khi báo lỗi, hãy thử **F5 lại tab Facebook**: sau khi cài hoặc cập nhật extension, các tab đang mở sẵn sẽ không ghi nhận tin nhắn cho tới khi được tải lại.
 
 ---
 
@@ -139,7 +153,11 @@ Then navigate to `chrome://extensions/`, enable **Developer mode**, click **Load
 If an unsent message does not restore in the expected position due to a Facebook UI update:
 1. While on the Facebook tab, press **`Alt + Shift + D`**.
 2. A diagnostic file named `fb-unsend-debug-<timestamp>.json` will be downloaded automatically.
-3. Open a [**GitHub Issue**](../../issues) and attach the debug file or screenshot so we can investigate and fix it quickly.
+3. Open a [**GitHub Issue**](https://github.com/binhake/fb-unsend-viewer/issues/new?template=bug_report.md) (a bug report template is provided) and attach the debug file and a screenshot so we can investigate and fix it quickly.
+
+> ⚠️ Please **blur names, avatars and private message content** in screenshots and logs before posting.
+>
+> 💡 Before reporting, try **refreshing the Facebook tab**: after installing or updating the extension, already-open tabs won't capture messages until they are reloaded.
 
 ---
 
