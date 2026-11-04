@@ -84,10 +84,26 @@ Sau đó vào `chrome://extensions/` → Bật **Developer mode** → Chọn **L
 
 ### 🛠️ Báo lỗi & Xuất nhật ký gỡ lỗi (Debug Log)
 
-Nếu bạn gặp trường hợp tin nhắn bị gỡ chưa hiển thị đúng tên nhóm hoặc vị trí trên một giao diện Facebook mới:
-1. Tại tab Facebook đang mở, nhấn tổ hợp phím **`Alt + Shift + D`**.
-2. Trình duyệt sẽ tự động tải xuống tệp `fb-unsend-debug-<timestamp>.json` chứa thông tin cấu trúc DOM/WebSocket liên quan đến bộ nhớ đệm.
-3. Mở một [**Issue mới**](https://github.com/binhake/fb-unsend-viewer/issues/new?template=bug_report.md) trên GitHub (đã có sẵn mẫu báo lỗi, chỉ cần điền) và đính kèm tệp log này cùng ảnh chụp màn hình để mình hỗ trợ xử lý nhanh nhất.
+Extension có sẵn phím tắt xuất file log để mình biết chính xác chuyện gì đã xảy ra. Gửi kèm file này trong issue thì lỗi sẽ được sửa nhanh hơn nhiều so với chỉ mô tả bằng lời.
+
+**Bước 1. Xuất file log ngay khi gặp lỗi**
+1. Ở **đúng tab Facebook vừa xảy ra lỗi** (đang mở đoạn chat có tin bị gỡ), **đừng F5**: log được giữ trong bộ nhớ của tab, tải lại trang là mất.
+2. Bấm chuột vào một chỗ trống trên trang để trang đang được chọn (không phải thanh địa chỉ).
+3. Nhấn **`Alt + Shift + D`**.
+4. Trình duyệt tải về tệp `fb-unsend-debug-<số>.json` (thường nằm trong thư mục **Downloads**).
+
+> Không thấy file tải về? Kiểm tra Chrome có đang chặn tải xuống (biểu tượng ở góc phải thanh địa chỉ) không. Nếu extension vừa được cập nhật thì tab cũ không còn nhận phím tắt: F5 tab, chờ lỗi xảy ra lại rồi mới xuất log.
+
+**Bước 2. Che thông tin riêng tư trong file log**
+
+File log chứa **nội dung các tin nhắn gần đây, tên người trong đoạn chat, ID Facebook của bạn** và đường dẫn đoạn chat. Trước khi đăng công khai:
+- Mở file bằng Notepad / VS Code, dùng **Ctrl + H** thay các tên và nội dung nhạy cảm bằng `xxx` (đừng xóa dấu `"` hay `,` để file vẫn đọc được).
+- Hoặc không đính kèm công khai: ghi trong issue là *"có file log, cần gửi riêng"*, mình sẽ liên hệ lại.
+
+**Bước 3. Tạo issue**
+1. Mở [**Issue mới**](https://github.com/binhake/fb-unsend-viewer/issues/new?template=bug_report.md) (đã có sẵn mẫu báo lỗi, chỉ cần điền).
+2. Mô tả lỗi, các bước tái hiện, tick môi trường.
+3. **Kéo thả file `.json`** và ảnh chụp màn hình vào khung soạn thảo. Nếu GitHub không nhận file `.json` thì nén thành `.zip` rồi kéo vào.
 
 > ⚠️ Nhớ **che tên, avatar và nội dung tin nhắn riêng tư** trong ảnh chụp và tệp log trước khi đăng lên issue.
 >
@@ -158,10 +174,26 @@ Then navigate to `chrome://extensions/`, enable **Developer mode**, click **Load
 
 ### 🛠️ Troubleshooting & Debug Log Export
 
-If an unsent message does not restore in the expected position due to a Facebook UI update:
-1. While on the Facebook tab, press **`Alt + Shift + D`**.
-2. A diagnostic file named `fb-unsend-debug-<timestamp>.json` will be downloaded automatically.
-3. Open a [**GitHub Issue**](https://github.com/binhake/fb-unsend-viewer/issues/new?template=bug_report.md) (a bug report template is provided) and attach the debug file and a screenshot so we can investigate and fix it quickly.
+The extension has a built-in shortcut that exports a debug log. Attaching it to your issue makes bugs much faster to fix than a description alone.
+
+**Step 1. Export the log right after the bug happens**
+1. Stay on **the same Facebook tab where the bug happened** and **do not refresh**: the log lives in the tab's memory and is lost on reload.
+2. Click an empty spot on the page so the page (not the address bar) has focus.
+3. Press **`Alt + Shift + D`**.
+4. The browser downloads `fb-unsend-debug-<number>.json` (usually into your **Downloads** folder).
+
+> No file? Check whether Chrome blocked the download (icon on the right of the address bar). If the extension was just updated, old tabs no longer respond to the shortcut: refresh, wait for the bug to happen again, then export.
+
+**Step 2. Remove private data from the log**
+
+The log contains **recent message content, names of people in the chat, your Facebook ID** and the chat URL. Before posting publicly:
+- Open it in Notepad / VS Code and use **Ctrl + H** to replace names and sensitive text with `xxx` (keep the `"` and `,` characters so the file stays valid).
+- Or don't attach it publicly: write *"I have a log, need to send it privately"* in the issue and I'll get back to you.
+
+**Step 3. Open an issue**
+1. Open a [**new issue**](https://github.com/binhake/fb-unsend-viewer/issues/new?template=bug_report.md) (a bug report template is provided).
+2. Describe the bug, the steps to reproduce, and tick your environment.
+3. **Drag and drop the `.json` file** and your screenshots into the editor. If GitHub rejects `.json`, zip it first.
 
 > ⚠️ Please **blur names, avatars and private message content** in screenshots and logs before posting.
 >
