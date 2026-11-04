@@ -285,13 +285,18 @@
     if (currentUserId && rec.senderId) {
       return String(rec.senderId) === String(currentUserId);
     }
-    if (typeof rec.isSelf === 'boolean') return rec.isSelf;
+    if (rec.personName && isCurrentUserName(rec.personName)) {
+      return true;
+    }
     if (rec.unsendNotice) {
       if (isSelfUnsendNotice(rec.unsendNotice)) return true;
       const np = extractNameFromNotice(rec.unsendNotice);
-      if (np && !isSelfKeyword(np)) return false;
+      if (np) {
+        if (isCurrentUserName(np)) return true;
+        return false;
+      }
     }
-    if (isSelfKeyword(rec.personName)) return true;
+    if (typeof rec.isSelf === 'boolean') return rec.isSelf;
     return false;
   }
 
@@ -417,11 +422,22 @@
               }
             }
             if (Array.isArray(res[STORAGE_KEY_UNSENT])) {
-              unsentMessagesList = res[STORAGE_KEY_UNSENT]
+              const sanitizedUnsent = res[STORAGE_KEY_UNSENT]
                 .map((msg) => {
                   const cleaned = sanitizeStoredRecord(msg);
                   if (
+                    !cleaned.hasNativePlaceholder &&
+                    cleaned.text === '🐕' &&
+                    /^hải đăng$/i.test((cleaned.threadName || '').trim())
+                  ) {
+                    cleaned.threadName = '';
+                    cleaned.senderName = formatSenderAndThreadName(cleaned.personName, '', '');
+                    needsResave = true;
+                  }
+                  if (
                     cleaned.text !== msg.text ||
+                    cleaned.isSelf !== msg.isSelf ||
+                    cleaned.personName !== msg.personName ||
                     cleaned.threadName !== msg.threadName ||
                     cleaned.senderName !== msg.senderName ||
                     msg.rowEl ||
@@ -432,6 +448,44 @@
                   return cleaned;
                 })
                 .filter((msg) => msg.text || (msg.attachments && msg.attachments.length > 0));
+
+              const dedupedUnsent = [];
+              for (const item of sanitizedUnsent) {
+                const dupIdx = dedupedUnsent.findIndex((existing) => {
+                  if (existing.messageId === item.messageId) return true;
+                  if (existing.isSelf !== item.isSelf) return false;
+                  const sameText =
+                    Boolean(existing.text) &&
+                    existing.text.trim() === (item.text || '').trim();
+                  if (!sameText) return false;
+                  const timeA = existing.unsentAt || existing.timestamp || 0;
+                  const timeB = item.unsentAt || item.timestamp || 0;
+                  const closeInTime = Math.abs(timeA - timeB) < 25000;
+                  const sameAnchor =
+                    Boolean(existing.anchorAboveText) &&
+                    existing.anchorAboveText.trim().toLowerCase() ===
+                      (item.anchorAboveText || '').trim().toLowerCase();
+                  return closeInTime && (sameAnchor || isTempDomId(existing.messageId) || isTempDomId(item.messageId));
+                });
+
+                if (dupIdx !== -1) {
+                  needsResave = true;
+                  const prev = dedupedUnsent[dupIdx];
+                  if (isTempDomId(prev.messageId) && !isTempDomId(item.messageId)) {
+                    dedupedUnsent[dupIdx] = {
+                      ...prev,
+                      ...item,
+                      hasNativePlaceholder: Boolean(prev.hasNativePlaceholder || item.hasNativePlaceholder)
+                    };
+                  } else {
+                    prev.hasNativePlaceholder = Boolean(prev.hasNativePlaceholder || item.hasNativePlaceholder);
+                  }
+                } else {
+                  dedupedUnsent.push(item);
+                }
+              }
+
+              unsentMessagesList = dedupedUnsent;
               for (const msg of unsentMessagesList) {
                 if (msg.messageId) {
                   messagesById.set(msg.messageId, msg);
@@ -724,7 +778,7 @@
     return cleaned;
   }
 
-  function isSameThreadName(threadA, threadB, senderNameB = '') {
+  function isSameThreadName(threadA, threadB, senderNameB = '', requireBoth = false) {
     const a = normalizeThreadTitle(threadA).toLowerCase();
     let b = normalizeThreadTitle(threadB).toLowerCase();
     if (!b && senderNameB && String(senderNameB).includes('•')) {
@@ -736,7 +790,7 @@
         b = parts[parts.length - 1];
       }
     }
-    if (!a || !b) return true;
+    if (!a || !b) return !requireBoth;
     if (a === b) return true;
     if (a.length >= 3 && b.length >= 3 && (a.includes(b) || b.includes(a))) {
       return true;
@@ -1973,8 +2027,11 @@
   function getChatContainerForRow(rowEl) {
     if (!rowEl || !(rowEl instanceof HTMLElement)) return document.body;
 
+    const dialogOrTab = rowEl.closest('div[role="dialog"], div[data-pagelet*="ChatTab"]');
+    if (dialogOrTab) return dialogOrTab;
+
     const explicitContainer = rowEl.closest(
-      'div[role="dialog"], div[data-pagelet*="ChatTab"], div[aria-label^="Cuộc trò chuyện "], div[aria-label^="Đoạn chat "], div[aria-label^="Conversation "], div[aria-label^="Chat with "], div[aria-label^="Community chat "]'
+      'div[aria-label^="Cuộc trò chuyện "], div[aria-label^="Đoạn chat "], div[aria-label^="Conversation "], div[aria-label^="Chat with "], div[aria-label^="Community chat "]'
     );
     if (explicitContainer) return explicitContainer;
 
@@ -2202,7 +2259,7 @@
     return rowToRecordMap;
   }
 
-  function isNormalChatContainer(container, threadName, hasNativeUnsentInContainer) {
+  function isNormalChatContainer(container, threadName, hasNativeUnsentInContainer, rows = []) {
     if (hasNativeUnsentInContainer) return true;
     if (!container || !(container instanceof HTMLElement)) return false;
 
@@ -2212,19 +2269,57 @@
         if (!u || !u.hasNativePlaceholder) return false;
         const uThread = normalizeThreadTitle(u.threadName);
         if (!uThread) return false;
-        return isSameThreadName(cleanThread, uThread, u.senderName);
+        return isSameThreadName(cleanThread, uThread, u.senderName, true);
       });
       if (hasNativeHistoryInThread) return true;
     }
 
-    const containerRect = container.getBoundingClientRect();
-    const callButtons = container.querySelectorAll(
-      '[aria-label*="Gọi thoại"], [aria-label*="Gọi video"], [aria-label*="Bắt đầu gọi"], [aria-label*="Audio call"], [aria-label*="Video call"], [aria-label*="Start a voice call"], [aria-label*="Start a video call"]'
-    );
-    for (const btn of callButtons) {
-      const rect = btn.getBoundingClientRect();
-      if (rect.width > 4 && rect.height > 4 && rect.top <= containerRect.top + 110) {
+    // Trong chat 1-1, tên người gửi phía bên kia trùng với tiêu đề đoạn chat
+    if (
+      cleanThread &&
+      Array.isArray(rows) &&
+      rows.some((r) => !r.isSelf && r.personName && isSamePersonName(r.personName, cleanThread, false))
+    ) {
+      return true;
+    }
+
+    // Kiểm tra xem container có dấu hiệu rõ ràng của Đoạn chat Cộng đồng không
+    const isExplicitCommunityChat =
+      /\b(community|cộng đồng)\b|\|/i.test(cleanThread) ||
+      Boolean(
+        container.querySelector(
+          '[aria-label*="Đoạn chat cộng đồng"], [aria-label*="Community chat"]'
+        )
+      );
+
+    // Nút gửi clip âm thanh (microphone) hoặc trạng thái "Hoạt động ... trước" chỉ có ở chat 1-1 / nhóm thường
+    if (
+      container.querySelector(
+        '[aria-label*="clip âm thanh"], [aria-label*="voice clip"], [aria-label*="Gửi clip âm thanh"], [aria-label*="Send a voice clip"]'
+      )
+    ) {
+      return true;
+    }
+
+    const headerSubtitles = container.querySelectorAll('span[dir="auto"], span');
+    for (const span of headerSubtitles) {
+      if (span.childElementCount > 0) continue;
+      const txt = (span.textContent || '').trim();
+      if (/^(Hoạt động\s+.+\s+trước|Active\s+.+\s+ago|Được mã hóa đầu cuối|End-to-end encrypted)/i.test(txt)) {
         return true;
+      }
+    }
+
+    if (!isExplicitCommunityChat) {
+      const containerRect = container.getBoundingClientRect();
+      const callButtons = container.querySelectorAll(
+        '[aria-label*="Gọi thoại"], [aria-label*="Gọi video"], [aria-label*="Bắt đầu gọi"], [aria-label*="Audio call"], [aria-label*="Video call"], [aria-label*="Start a voice call"], [aria-label*="Start a video call"]'
+      );
+      for (const btn of callButtons) {
+        const rect = btn.getBoundingClientRect();
+        if (rect.width > 4 && rect.height > 4 && rect.top <= containerRect.top + 110) {
+          return true;
+        }
       }
     }
 
@@ -2873,7 +2968,7 @@
     for (const [container, containerInfo] of normalRowsByContainer.entries()) {
       const { threadName: containerThreadName, hasNativeUnsent, rows } = containerInfo;
 
-      if (isNormalChatContainer(container, containerThreadName, hasNativeUnsent)) {
+      if (isNormalChatContainer(container, containerThreadName, hasNativeUnsent, rows)) {
         if (container && container instanceof HTMLElement) {
           container
             .querySelectorAll('.fb-unsend-community-restored-list')
@@ -2930,13 +3025,22 @@
         const targetRowInfo = matchingRows[matchingRows.length - 1];
         if (targetRowInfo.nextRowIsNativeUnsent) continue;
 
-        const sameThread = isSameThreadName(containerThreadName, u.threadName, u.senderName);
-        const uniqueAnchorInThisWindow =
-          uAnchor.length >= 10 && !otherContainerTexts.has(uAnchorLower);
+        const hasStoredThread = Boolean(normalizeThreadTitle(u.threadName));
+        const sameThread = isSameThreadName(
+          containerThreadName,
+          u.threadName,
+          u.senderName,
+          hasStoredThread
+        );
+        const isVeryRecentUnassigned =
+          !hasStoredThread &&
+          ((u.unsentAt && Date.now() - u.unsentAt < 30000) ||
+            (uAnchor.length >= 10 && !otherContainerTexts.has(uAnchorLower)));
 
-        if (!sameThread && !uniqueAnchorInThisWindow) continue;
+        if (hasStoredThread ? !sameThread : !isVeryRecentUnassigned) continue;
 
         if (
+          !hasStoredThread &&
           !isGenericSenderName(containerThreadName) &&
           u.threadName !== containerThreadName
         ) {
@@ -2975,6 +3079,13 @@
               }
               if (!u2.text && (!u2.attachments || u2.attachments.length === 0)) continue;
               if (u2.unsentAt && Date.now() - u2.unsentAt < 350) continue;
+              const u2HasThread = Boolean(normalizeThreadTitle(u2.threadName));
+              if (
+                u2HasThread &&
+                !isSameThreadName(containerThreadName, u2.threadName, u2.senderName, true)
+              ) {
+                continue;
+              }
 
               const u2Anchor = (u2.anchorAboveText || '').trim().toLowerCase();
               const matchedParent = group.items.find((parentItem) => {
