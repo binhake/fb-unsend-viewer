@@ -1,0 +1,114 @@
+name: 🐞 Báo lỗi / Bug report
+description: Tin nhắn bị gỡ không được khôi phục, hiển thị sai, popup lỗi... / Something isn't working
+title: "[Lỗi] "
+labels: ["bug"]
+assignees: ["binhake"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Cảm ơn bạn đã báo lỗi! 🙏 Các ô có dấu <b>*</b> là bắt buộc.
+        Thanks for reporting! Fields marked <b>*</b> are required.
+
+        ⚠️ Nhớ **che tên, avatar và nội dung tin nhắn riêng tư** trong ảnh chụp và file log.
+        Please **blur names, avatars and private messages** in screenshots and logs.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Mô tả lỗi / What happened?
+      placeholder: "Ví dụ: Người kia gỡ một tin có ảnh nhưng bong bóng không hiện lại nội dung"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Các bước tái hiện / Steps to reproduce
+      placeholder: |
+        1. Mở đoạn chat ...
+        2. Người kia gửi rồi gỡ ...
+        3. ...
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Phiên bản extension / Extension version
+      description: Xem ở góc dưới bên phải popup / Shown at the bottom right of the popup
+      placeholder: v1.2.4
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Trình duyệt & hệ điều hành / Browser & OS
+      placeholder: Chrome 130, Windows 11
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: where
+    attributes:
+      label: Lỗi xảy ra ở / Where
+      options:
+        - label: Khung chat nhỏ trên facebook.com / Chat tab on facebook.com
+        - label: Messenger toàn màn hình (facebook.com/messages) / Full-screen Messenger
+        - label: Popup của extension / Extension popup
+
+  - type: checkboxes
+    id: chat-type
+    attributes:
+      label: Loại đoạn chat / Chat type
+      options:
+        - label: Chat 1-1
+        - label: Nhóm chat / Group chat
+        - label: Đoạn chat cộng đồng / Community chat
+        - label: Có mã hóa đầu cuối (E2EE) / End-to-end encrypted
+
+  - type: input
+    id: content-type
+    attributes:
+      label: Loại tin bị gỡ / Unsent content
+      placeholder: Văn bản, ảnh, ảnh xem 1 lần, sticker, voice, video...
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Đã thử chưa? / Checklist
+      options:
+        - label: Đã F5 lại tab Facebook sau khi cài / cập nhật extension / Refreshed the Facebook tab after installing or updating
+          required: true
+        - label: Tin nhắn được gửi đến **sau khi** đã mở Facebook có extension / The message arrived **while** Facebook was open with the extension running
+
+  - type: markdown
+    attributes:
+      value: |
+        ### 📄 Cách xuất debug log / How to export the debug log
+        1. Ở **đúng tab Facebook vừa bị lỗi**, **đừng F5** (tải lại là mất log). / Stay on the tab where the bug happened, **don't refresh**.
+        2. Bấm vào chỗ trống trên trang → nhấn **`Alt + Shift + D`**. / Click an empty spot on the page → press **`Alt + Shift + D`**.
+        3. File `fb-unsend-debug-<số>.json` được tải về thư mục Downloads. / The file is saved to Downloads.
+        4. File log có **nội dung tin nhắn, tên và ID Facebook** của bạn: mở bằng Notepad, `Ctrl + H` thay chỗ nhạy cảm bằng `xxx`. / The log contains **message text, names and your Facebook ID**: replace sensitive parts with `xxx`.
+        5. Kéo thả file vào ô bên dưới (GitHub không nhận `.json` thì nén `.zip`). / Drag the file into the box below (zip it if `.json` is rejected).
+
+  - type: textarea
+    id: attachments
+    attributes:
+      label: Ảnh chụp & debug log / Screenshots & debug log
+      description: Kéo thả ảnh và file log vào đây. Có lỗi đỏ trong F12 → Console thì chụp luôn. / Drag screenshots and the log here, plus any red errors from F12 → Console.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: log-status
+    attributes:
+      label: Debug log
+      options:
+        - Đã đính kèm ở trên / Attached above
+        - Có log nhưng cần gửi riêng / Have a log, need to send it privately
+        - Không có log / No log
+      default: 0
+    validations:
+      required: true
