@@ -731,13 +731,13 @@
     }
     if (
       /unsupportedmid\.\$/i.test(trimmed) ||
-      /^unavailable\s*—/i.test(trimmed) ||
+      /^unavailable\s*[-—]/i.test(trimmed) ||
       (/Tin nhắn không hiển thị|File đính kèm không được hỗ trợ|Unsupported attachment|Tin nhắn này không hiển thị trên ứng dụng này/i.test(
         trimmed
       ) &&
-        !trimmed.startsWith('⚠️'))
+        (!trimmed.startsWith('⚠️') || trimmed.includes(' — ')))
     ) {
-      return '⚠️ File đính kèm không được hỗ trợ — Tin nhắn này không hiển thị trên ứng dụng này';
+      return '⚠️ File đính kèm không được hỗ trợ - Tin nhắn này không hiển thị trên ứng dụng này';
     }
     return trimmed;
   }
@@ -2642,7 +2642,7 @@
       if (texts.length === 0) {
         const joinedUnsupported =
           unsupportedLines.length > 0
-            ? `⚠️ ${unsupportedLines.slice(0, 2).join(' — ')}`
+            ? `⚠️ ${unsupportedLines.slice(0, 2).join(' - ')}`
             : '⚠️ File đính kèm không được hỗ trợ trên Web';
         texts.push(joinedUnsupported);
       }

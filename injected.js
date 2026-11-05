@@ -1432,8 +1432,8 @@
           );
           const bodyText =
             detailParts.length > 0
-              ? detailParts.slice(0, 2).join(' — ')
-              : 'File đính kèm không được hỗ trợ — Tin nhắn này không hiển thị trên ứng dụng này';
+              ? detailParts.slice(0, 2).join(' - ')
+              : 'File đính kèm không được hỗ trợ - Tin nhắn này không hiển thị trên ứng dụng này';
           combinedText = bodyText.startsWith('⚠️') ? bodyText : `⚠️ ${bodyText}`;
           const candidateOtid =
             [...altIds, ...(savedMeta?.altIds || [])].find((id) => /^\d{15,22}$/.test(id)) || '';
@@ -1446,7 +1446,7 @@
         } else {
           combinedText =
             isXmaOrAttachmentMod && uniqueTexts.length > 1
-              ? uniqueTexts.slice(0, 3).join(' — ')
+              ? uniqueTexts.slice(0, 3).join(' - ')
               : uniqueTexts[0] || '';
         }
         registerCapturedMessage({

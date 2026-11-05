@@ -198,6 +198,14 @@ function sanitizePopupRecord(item) {
       cleanAttachments.unshift(mpdUrl);
     }
     cleanText = cleanAttachments.length > 0 ? '' : '🎬 [Video]';
+  } else if (
+    cleanText &&
+    cleanText.startsWith('⚠️') &&
+    cleanText.includes(' — ') &&
+    /File đính kèm không được hỗ trợ|Tin nhắn này không hiển thị trên ứng dụng này/i.test(cleanText)
+  ) {
+    cleanText = cleanText.replace(/\s*—\s*/g, ' - ');
+    changed = true;
   }
 
   if (!changed) {
