@@ -54,6 +54,7 @@ function cacheDom() {
 
   dom.footerInfo = document.getElementById('footer-info');
   dom.versionTag = document.getElementById('version-tag');
+  dom.debugBtn = document.getElementById('debug-btn');
 
   dom.statusToast = document.getElementById('status-toast');
   dom.statusIconUse = dom.statusToast.querySelector('.status-icon use');
@@ -683,6 +684,85 @@ function exportBackupJson() {
   });
 }
 
+function downloadFallbackDebugJson() {
+  chrome.storage.local.get(
+    [STORAGE_KEY_UNSENT, STORAGE_KEY_MESSAGES, STORAGE_KEY_TOAST_ENABLED],
+    function (res) {
+      const unsent = Array.isArray(res[STORAGE_KEY_UNSENT]) ? res[STORAGE_KEY_UNSENT] : [];
+      const captured = Array.isArray(res[STORAGE_KEY_MESSAGES]) ? res[STORAGE_KEY_MESSAGES] : [];
+      const report = {
+        exportedAt: new Date().toISOString(),
+        source:
+          'popup-storage-fallback (không tìm thấy tab Facebook đang mở hoặc tab chưa tải lại trang)',
+        version: chrome.runtime.getManifest().version,
+        userAgent: navigator.userAgent,
+        isToastEnabled: res[STORAGE_KEY_TOAST_ENABLED] !== false,
+        unsentCount: unsent.length,
+        capturedCount: captured.length,
+        contentWorld: {
+          unsentMessagesList: unsent,
+          recentMessagesListTail: captured.slice(-150)
+        }
+      };
+
+      const blob = new Blob([JSON.stringify(report, null, 2)], {
+        type: 'application/json;charset=utf-8'
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `fb-unsend-debug-${Date.now()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () {
+        URL.revokeObjectURL(url);
+      }, 1500);
+
+      showStatus('Đã tải tệp Debug (dữ liệu lưu trữ — mở tab Facebook và F5 nếu cần chụp thêm DOM)');
+    }
+  );
+}
+
+function exportDebugReport() {
+  if (!chrome.tabs || typeof chrome.tabs.query !== 'function') {
+    downloadFallbackDebugJson();
+    return;
+  }
+
+  chrome.tabs.query({ active: true, currentWindow: true }, function (activeTabs) {
+    const activeTab = (activeTabs || []).find(t => t && t.id);
+    const tryFallbackTabs = function () {
+      chrome.tabs.query({ url: '*://*.facebook.com/*' }, function (fbTabs) {
+        const targetTab = (fbTabs || []).find(t => t && t.id);
+        if (!targetTab) {
+          downloadFallbackDebugJson();
+          return;
+        }
+        chrome.tabs.sendMessage(targetTab.id, { type: 'TRIGGER_DEBUG_EXPORT' }, function (resp) {
+          if (chrome.runtime.lastError || !resp || !resp.ok) {
+            downloadFallbackDebugJson();
+          } else {
+            showStatus('Đã tải tệp chẩn đoán lỗi (Debug JSON)');
+          }
+        });
+      });
+    };
+
+    if (activeTab && (!activeTab.url || /facebook\.com/i.test(activeTab.url))) {
+      chrome.tabs.sendMessage(activeTab.id, { type: 'TRIGGER_DEBUG_EXPORT' }, function (resp) {
+        if (chrome.runtime.lastError || !resp || !resp.ok) {
+          tryFallbackTabs();
+        } else {
+          showStatus('Đã tải tệp chẩn đoán lỗi (Debug JSON)');
+        }
+      });
+    } else {
+      tryFallbackTabs();
+    }
+  });
+}
+
 function isTempId(id) {
   return !id || String(id).startsWith('dom_') || String(id).startsWith('unsend_');
 }
@@ -892,6 +972,9 @@ function bindEvents() {
   });
 
   dom.exportBtn.addEventListener('click', exportBackupJson);
+  if (dom.debugBtn) {
+    dom.debugBtn.addEventListener('click', exportDebugReport);
+  }
 
   dom.importBtn.addEventListener('click', function () {
     dom.importFileInput.value = '';

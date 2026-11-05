@@ -28,6 +28,7 @@
     <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.5v.01"/></symbol>
     <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/></symbol>
     <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M3.5 13.5h4.5l1.5 2.5h5l1.5-2.5h4.5"/><path d="M6.2 5h11.6l2.7 8.5V19a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1v-5.5z"/></symbol>
+    <symbol id="i-bug" viewBox="0 0 24 24"><rect x="8" y="9" width="8" height="10" rx="4"/><path d="M10 9V7a2 2 0 1 1 4 0v2"/><path d="M12 13v6"/><path d="M4 13h4"/><path d="M16 13h4"/><path d="m5 8 3.2 2.2"/><path d="m19 8-3.2 2.2"/><path d="m5 19 3.2-2.2"/><path d="m19 19-3.2-2.2"/></symbol>
   </svg>
 
   <div class="app">
@@ -120,6 +121,11 @@
         <a id="author-credit" class="author-credit" href="https://github.com/binhake/fb-unsend-viewer" target="_blank" rel="noopener noreferrer" title="Bản quyền thuộc về binhake — Nhấn để mở GitHub gốc">© binhake</a>
         <span class="footer-sep" aria-hidden="true">•</span>
         <span id="version-tag" class="version-tag"></span>
+        <span class="footer-sep" aria-hidden="true">•</span>
+        <button type="button" id="debug-btn" class="debug-link-btn" title="Tải tệp chẩn đoán lỗi (Debug JSON — hoặc nhấn Alt+Shift+D trên tab Facebook)" aria-label="Tải tệp Debug">
+          <svg class="icon"><use href="#i-bug"/></svg>
+          <span>Debug</span>
+        </button>
       </span>
     </footer>
 

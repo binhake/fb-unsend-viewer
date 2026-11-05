@@ -870,6 +870,32 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
+.debug-link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.3;
+  transition: color 0.15s, border-color 0.15s, background-color 0.15s;
+}
+
+.debug-link-btn .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.debug-link-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
 /* ===== Thông báo nổi ===== */
 .status-toast {
   position: absolute;

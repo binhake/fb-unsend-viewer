@@ -885,6 +885,18 @@
     true
   );
 
+  try {
+    if (chrome?.runtime?.onMessage) {
+      chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+        if (msg && msg.type === 'TRIGGER_DEBUG_EXPORT') {
+          triggerDebugExport();
+          sendResponse({ ok: true, url: location.href });
+          return true;
+        }
+      });
+    }
+  } catch (_) {}
+
   // ============================================================================
   // 1. NHẬN SỰ KIỆN TỪ TẦNG NGẦM (injected.js)
   // ============================================================================
