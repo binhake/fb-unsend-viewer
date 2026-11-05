@@ -10,6 +10,7 @@
   const STORAGE_KEY_UNSENT = 'fb_unsent_messages_v2';
   const STORAGE_KEY_CLEANED_FLAG = 'fb_unsend_schema_v4_cleaned';
   const STORAGE_KEY_TOAST_ENABLED = 'fb_unsend_toast_enabled';
+  const STORAGE_KEY_ORPHANED_BRIDGE = 'fb_unsend_orphaned_bridge_v1';
   const MAX_STORED_MESSAGES = 500;
 
   // Tùy chọn hiện thông báo ở góc màn hình (bật/tắt từ popup), mặc định bật
@@ -250,8 +251,10 @@
   function sanitizeAttachmentsList(attachments) {
     if (!Array.isArray(attachments)) return [];
     const valid = [];
-    for (const url of attachments) {
-      if (!url || typeof url !== 'string') continue;
+    for (const rawUrl of attachments) {
+      if (!rawUrl || typeof rawUrl !== 'string') continue;
+      const url = isDashMpdXmlString(rawUrl) ? extractDashMpdVideoUrl(rawUrl) : rawUrl;
+      if (!url || typeof url !== 'string' || isDashMpdXmlString(url)) continue;
       if (
         url.includes('/messaging/lightspeed/media_fallback/') ||
         /\/t39\.30808-1\/|p50x50|p100x100|s100x100|p60x60|p40x40|dst-jpg_s\d+x\d+/i.test(url)
@@ -485,6 +488,56 @@
     return false;
   }
 
+  function isDashMpdXmlString(text) {
+    if (!text || typeof text !== 'string') return false;
+    const trimmed = text.trim();
+    return (
+      /^<\?xml\b/i.test(trimmed) ||
+      /^<MPD\b/i.test(trimmed) ||
+      trimmed.includes('urn:mpeg:dash:schema:mpd')
+    );
+  }
+
+  function extractDashMpdVideoUrl(text) {
+    if (!text || typeof text !== 'string') return null;
+    const trimmed = text.trim();
+    if (!isDashMpdXmlString(trimmed) || !trimmed.includes('<BaseURL>')) return null;
+
+    let bestVideoUrl = null;
+    let bestBandwidth = -1;
+    let fallbackUrl = null;
+
+    const repRegex = /<Representation\b([^>]*)>[\s\S]*?<BaseURL>([\s\S]*?)<\/BaseURL>/gi;
+    let match;
+    while ((match = repRegex.exec(trimmed)) !== null) {
+      const attrs = match[1] || '';
+      const rawUrl = (match[2] || '').trim().replace(/&amp;/g, '&');
+      if (!/^https?:\/\//i.test(rawUrl)) continue;
+      if (!fallbackUrl) fallbackUrl = rawUrl;
+
+      const isAudio = /mimeType=["']audio\//i.test(attrs);
+      const isVideo = /mimeType=["']video\//i.test(attrs) || !isAudio;
+      if (isVideo) {
+        const bwMatch = attrs.match(/bandwidth=["'](\d+)["']/i);
+        const bw = bwMatch ? parseInt(bwMatch[1], 10) : 0;
+        if (bw >= bestBandwidth) {
+          bestBandwidth = bw;
+          bestVideoUrl = rawUrl;
+        }
+      }
+    }
+
+    if (bestVideoUrl) return bestVideoUrl;
+    if (fallbackUrl) return fallbackUrl;
+
+    const baseMatch = trimmed.match(/<BaseURL>([\s\S]*?)<\/BaseURL>/i);
+    if (baseMatch && baseMatch[1]) {
+      const url = baseMatch[1].trim().replace(/&amp;/g, '&');
+      if (/^https?:\/\//i.test(url)) return url;
+    }
+    return null;
+  }
+
   function isRawVaultTokenString(text) {
     if (!text || typeof text !== 'string') return false;
     const trimmed = text.trim();
@@ -498,7 +551,7 @@
   function normalizeUnsupportedAttachmentText(text) {
     if (!text || typeof text !== 'string') return '';
     const trimmed = text.trim();
-    if (!trimmed || isRawVaultTokenString(trimmed)) return '';
+    if (!trimmed || isRawVaultTokenString(trimmed) || isDashMpdXmlString(trimmed)) return '';
     if (
       /^(Video).*(chỉ có thể xem được (1|một) lần|only be viewed once)/i.test(trimmed)
     ) {
@@ -547,11 +600,20 @@
     }
     const finalSender = formatSenderAndThreadName(cleanPerson, cleanThread, cleanSender);
     const cleanAttachments = sanitizeAttachmentsList(base.attachments);
+    if (base.text && isDashMpdXmlString(base.text)) {
+      const mpdUrl = extractDashMpdVideoUrl(base.text);
+      if (mpdUrl && !cleanAttachments.includes(mpdUrl)) {
+        cleanAttachments.unshift(mpdUrl);
+      }
+    }
     const normalizedBaseText = normalizeUnsupportedAttachmentText(base.text || '');
     const cleanText =
       normalizedBaseText && isAttachmentFilenameText(normalizedBaseText) && cleanAttachments.length > 0
         ? ''
-        : normalizedBaseText;
+        : normalizedBaseText ||
+          (base.text && isDashMpdXmlString(base.text) && cleanAttachments.length === 0
+            ? '🎬 [Video]'
+            : '');
     const e2eeIds = extractPeerIdFromE2EEMsgId(
       base.messageId || base.originalMessageId || base.fiberMsgId || '',
       inferredSelf
@@ -604,13 +666,49 @@
               return;
             }
 
-            let needsResave = false;
-            if (Array.isArray(res[STORAGE_KEY_MESSAGES])) {
-              recentMessagesList = res[STORAGE_KEY_MESSAGES]
+            let orphanedRecent = [];
+            let orphanedUnsent = [];
+            try {
+              const rawBridge = window.localStorage.getItem(STORAGE_KEY_ORPHANED_BRIDGE);
+              if (rawBridge) {
+                window.localStorage.removeItem(STORAGE_KEY_ORPHANED_BRIDGE);
+                const parsedBridge = JSON.parse(rawBridge);
+                if (parsedBridge && typeof parsedBridge === 'object') {
+                  if (Array.isArray(parsedBridge.recent)) orphanedRecent = parsedBridge.recent;
+                  if (Array.isArray(parsedBridge.unsent)) orphanedUnsent = parsedBridge.unsent;
+                }
+                dlog('STORAGE-ORPHAN-BRIDGE-RESTORED', '#00cec9', {
+                  orphanedRecentCount: orphanedRecent.length,
+                  orphanedUnsentCount: orphanedUnsent.length
+                });
+              }
+            } catch (_) {}
+
+            let needsResave = orphanedRecent.length > 0 || orphanedUnsent.length > 0;
+            const rawStoredRecent = Array.isArray(res[STORAGE_KEY_MESSAGES])
+              ? [...res[STORAGE_KEY_MESSAGES]]
+              : [];
+            if (orphanedRecent.length > 0) {
+              for (const oMsg of orphanedRecent) {
+                if (!oMsg || typeof oMsg !== 'object') continue;
+                const existIdx = oMsg.messageId
+                  ? rawStoredRecent.findIndex((m) => m && m.messageId === oMsg.messageId)
+                  : -1;
+                if (existIdx !== -1) {
+                  rawStoredRecent[existIdx] = { ...rawStoredRecent[existIdx], ...oMsg };
+                } else {
+                  rawStoredRecent.push(oMsg);
+                }
+              }
+            }
+
+            if (rawStoredRecent.length > 0) {
+              recentMessagesList = rawStoredRecent
                 .map((msg) => {
                   const cleaned = sanitizeStoredRecord(msg);
                   if (
                     cleaned.text !== msg.text ||
+                    (cleaned.attachments?.length || 0) !== (msg.attachments?.length || 0) ||
                     cleaned.threadName !== msg.threadName ||
                     cleaned.senderName !== msg.senderName ||
                     msg.rowEl ||
@@ -635,14 +733,23 @@
                   }
                   return true;
                 });
+              if (recentMessagesList.length > MAX_STORED_MESSAGES) {
+                recentMessagesList = recentMessagesList.slice(-MAX_STORED_MESSAGES);
+                needsResave = true;
+              }
               for (const msg of recentMessagesList) {
                 if (msg.messageId) {
                   messagesById.set(msg.messageId, msg);
                 }
               }
             }
-            if (Array.isArray(res[STORAGE_KEY_UNSENT])) {
-              const sanitizedUnsent = res[STORAGE_KEY_UNSENT]
+
+            const rawStoredUnsent = [
+              ...orphanedUnsent,
+              ...(Array.isArray(res[STORAGE_KEY_UNSENT]) ? res[STORAGE_KEY_UNSENT] : [])
+            ];
+            if (rawStoredUnsent.length > 0) {
+              const sanitizedUnsent = rawStoredUnsent
                 .map((msg) => {
                   const cleaned = sanitizeStoredRecord(msg);
                   if (
@@ -656,6 +763,7 @@
                   }
                   if (
                     cleaned.text !== msg.text ||
+                    (cleaned.attachments?.length || 0) !== (msg.attachments?.length || 0) ||
                     cleaned.isSelf !== msg.isSelf ||
                     cleaned.personName !== msg.personName ||
                     cleaned.threadName !== msg.threadName ||
@@ -728,12 +836,66 @@
     } catch (_) {}
   }
 
+  function saveOrphanedBridgeToLocalStorage() {
+    try {
+      const cleanRecent = recentMessagesList.map(stripDomReferences).slice(-MAX_STORED_MESSAGES);
+      const cleanUnsent = unsentMessagesList.map(stripDomReferences);
+      let existingRecent = [];
+      let existingUnsent = [];
+      try {
+        const prevRaw = window.localStorage.getItem(STORAGE_KEY_ORPHANED_BRIDGE);
+        if (prevRaw) {
+          const prev = JSON.parse(prevRaw);
+          if (Array.isArray(prev?.recent)) existingRecent = prev.recent;
+          if (Array.isArray(prev?.unsent)) existingUnsent = prev.unsent;
+        }
+      } catch (_) {}
+
+      const mergedUnsent = [...cleanUnsent];
+      for (const u of existingUnsent) {
+        if (u && u.messageId && !mergedUnsent.some((m) => m && m.messageId === u.messageId)) {
+          mergedUnsent.push(u);
+        }
+      }
+
+      const mergedRecent = [...existingRecent];
+      for (const r of cleanRecent) {
+        if (!r || !r.messageId) continue;
+        const idx = mergedRecent.findIndex((m) => m && m.messageId === r.messageId);
+        if (idx !== -1) {
+          mergedRecent[idx] = r;
+        } else {
+          mergedRecent.push(r);
+        }
+      }
+
+      window.localStorage.setItem(
+        STORAGE_KEY_ORPHANED_BRIDGE,
+        JSON.stringify({
+          savedAt: Date.now(),
+          unsent: mergedUnsent.slice(0, 200),
+          recent: mergedRecent.slice(-MAX_STORED_MESSAGES)
+        })
+      );
+      dlog('STORAGE-ORPHAN-BRIDGE-SAVED', '#fdcb6e', {
+        capturedCount: mergedRecent.length,
+        unsentCount: mergedUnsent.length
+      });
+    } catch (_) {}
+  }
+
   let saveTimeout = null;
   function saveToStorage() {
-    if (!isExtensionContextValid()) return;
+    if (!isExtensionContextValid()) {
+      saveOrphanedBridgeToLocalStorage();
+      return;
+    }
     if (saveTimeout) clearTimeout(saveTimeout);
     saveTimeout = setTimeout(() => {
-      if (!isExtensionContextValid()) return;
+      if (!isExtensionContextValid()) {
+        saveOrphanedBridgeToLocalStorage();
+        return;
+      }
       try {
         if (recentMessagesList.length > MAX_STORED_MESSAGES) {
           recentMessagesList = recentMessagesList.slice(-MAX_STORED_MESSAGES);
@@ -750,6 +912,7 @@
           () => {
             if (chrome.runtime?.lastError) {
               dlog('STORAGE-ERROR', '#e84118', 'Lỗi khi lưu chrome.storage.local:', chrome.runtime.lastError);
+              saveOrphanedBridgeToLocalStorage();
             } else {
               dlog('STORAGE-SAVED', '#00b894', {
                 capturedCount: cleanRecent.length,
@@ -760,6 +923,7 @@
         );
       } catch (err) {
         dlog('STORAGE-EXCEPTION', '#e84118', 'Exception trong saveToStorage:', err);
+        saveOrphanedBridgeToLocalStorage();
       }
     }, 300);
   }

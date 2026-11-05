@@ -122,8 +122,114 @@ function parseRecordNames(item) {
   return { person, thread, isSelf };
 }
 
+function isDashMpdXmlString(text) {
+  if (!text || typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  return (
+    /^<\?xml\b/i.test(trimmed) ||
+    /^<MPD\b/i.test(trimmed) ||
+    trimmed.includes('urn:mpeg:dash:schema:mpd')
+  );
+}
+
+function extractDashMpdVideoUrl(text) {
+  if (!text || typeof text !== 'string') return null;
+  const trimmed = text.trim();
+  if (!isDashMpdXmlString(trimmed) || !trimmed.includes('<BaseURL>')) return null;
+
+  let bestVideoUrl = null;
+  let bestBandwidth = -1;
+  let fallbackUrl = null;
+
+  const repRegex = /<Representation\b([^>]*)>[\s\S]*?<BaseURL>([\s\S]*?)<\/BaseURL>/gi;
+  let match;
+  while ((match = repRegex.exec(trimmed)) !== null) {
+    const attrs = match[1] || '';
+    const rawUrl = (match[2] || '').trim().replace(/&amp;/g, '&');
+    if (!/^https?:\/\//i.test(rawUrl)) continue;
+    if (!fallbackUrl) fallbackUrl = rawUrl;
+
+    const isAudio = /mimeType=["']audio\//i.test(attrs);
+    const isVideo = /mimeType=["']video\//i.test(attrs) || !isAudio;
+    if (isVideo) {
+      const bwMatch = attrs.match(/bandwidth=["'](\d+)["']/i);
+      const bw = bwMatch ? parseInt(bwMatch[1], 10) : 0;
+      if (bw >= bestBandwidth) {
+        bestBandwidth = bw;
+        bestVideoUrl = rawUrl;
+      }
+    }
+  }
+
+  if (bestVideoUrl) return bestVideoUrl;
+  if (fallbackUrl) return fallbackUrl;
+
+  const baseMatch = trimmed.match(/<BaseURL>([\s\S]*?)<\/BaseURL>/i);
+  if (baseMatch && baseMatch[1]) {
+    const url = baseMatch[1].trim().replace(/&amp;/g, '&');
+    if (/^https?:\/\//i.test(url)) return url;
+  }
+  return null;
+}
+
+function sanitizePopupRecord(item) {
+  if (!item || typeof item !== 'object') return { item, changed: false };
+  let changed = false;
+  const rawAttachments = Array.isArray(item.attachments) ? item.attachments : [];
+  const cleanAttachments = [];
+  for (const rawUrl of rawAttachments) {
+    if (!rawUrl || typeof rawUrl !== 'string') continue;
+    if (isDashMpdXmlString(rawUrl)) {
+      changed = true;
+      const extracted = extractDashMpdVideoUrl(rawUrl);
+      if (extracted && !cleanAttachments.includes(extracted)) {
+        cleanAttachments.push(extracted);
+      }
+    } else if (!cleanAttachments.includes(rawUrl)) {
+      cleanAttachments.push(rawUrl);
+    }
+  }
+
+  let cleanText = typeof item.text === 'string' ? item.text : '';
+  if (cleanText && isDashMpdXmlString(cleanText)) {
+    changed = true;
+    const mpdUrl = extractDashMpdVideoUrl(cleanText);
+    if (mpdUrl && !cleanAttachments.includes(mpdUrl)) {
+      cleanAttachments.unshift(mpdUrl);
+    }
+    cleanText = cleanAttachments.length > 0 ? '' : '🎬 [Video]';
+  }
+
+  if (!changed) {
+    return { item, changed: false };
+  }
+
+  return {
+    item: {
+      ...item,
+      text: cleanText,
+      attachments: cleanAttachments
+    },
+    changed: true
+  };
+}
+
 function getRecordAttachments(item) {
-  return Array.isArray(item.attachments) ? item.attachments.filter(Boolean) : [];
+  const raw = Array.isArray(item.attachments) ? item.attachments.filter(Boolean) : [];
+  const out = [];
+  for (const u of raw) {
+    const clean = isDashMpdXmlString(u) ? extractDashMpdVideoUrl(u) : u;
+    if (clean && !isDashMpdXmlString(clean) && !out.includes(clean)) {
+      out.push(clean);
+    }
+  }
+  if (item.text && isDashMpdXmlString(item.text)) {
+    const fromText = extractDashMpdVideoUrl(item.text);
+    if (fromText && !out.includes(fromText)) {
+      out.unshift(fromText);
+    }
+  }
+  return out;
 }
 
 function getRecordTime(item) {
@@ -473,7 +579,9 @@ function buildMessageCard(item, ts) {
   const { person, thread, isSelf } = parseRecordNames(item);
   const attachments = getRecordAttachments(item);
   const displayText =
-    item.text && !(isAttachmentFilenameText(item.text) && attachments.length > 0)
+    item.text &&
+    !isDashMpdXmlString(item.text) &&
+    !(isAttachmentFilenameText(item.text) && attachments.length > 0)
       ? item.text
       : '';
   const card = cloneTemplate('messageCardTemplate');
@@ -633,8 +741,29 @@ function removeUnsentMessage(messageId) {
 
 function loadPopupData() {
   chrome.storage.local.get([STORAGE_KEY_UNSENT, STORAGE_KEY_MESSAGES, STORAGE_KEY_TOAST_ENABLED], function (res) {
-    appState.unsentMessages = Array.isArray(res[STORAGE_KEY_UNSENT]) ? res[STORAGE_KEY_UNSENT] : [];
-    appState.capturedMessages = Array.isArray(res[STORAGE_KEY_MESSAGES]) ? res[STORAGE_KEY_MESSAGES] : [];
+    const rawUnsent = Array.isArray(res[STORAGE_KEY_UNSENT]) ? res[STORAGE_KEY_UNSENT] : [];
+    const rawCaptured = Array.isArray(res[STORAGE_KEY_MESSAGES]) ? res[STORAGE_KEY_MESSAGES] : [];
+    let unsentChanged = false;
+    let capturedChanged = false;
+
+    appState.unsentMessages = rawUnsent.map(m => {
+      const cleaned = sanitizePopupRecord(m);
+      if (cleaned.changed) unsentChanged = true;
+      return cleaned.item;
+    });
+    appState.capturedMessages = rawCaptured.map(m => {
+      const cleaned = sanitizePopupRecord(m);
+      if (cleaned.changed) capturedChanged = true;
+      return cleaned.item;
+    });
+
+    if (unsentChanged || capturedChanged) {
+      const patch = {};
+      if (unsentChanged) patch[STORAGE_KEY_UNSENT] = appState.unsentMessages;
+      if (capturedChanged) patch[STORAGE_KEY_MESSAGES] = appState.capturedMessages;
+      chrome.storage.local.set(patch);
+    }
+
     // Chưa từng lưu thì coi như đang bật
     dom.toastToggle.checked = res[STORAGE_KEY_TOAST_ENABLED] !== false;
     refreshView();
@@ -779,8 +908,9 @@ function smartMergeRecords(existingList, importedList, isUnsentCollection = true
   let addedCount = 0;
   let mergedCount = 0;
 
-  for (const rawItem of importedList) {
-    if (!rawItem || typeof rawItem !== 'object') continue;
+  for (const origItem of importedList) {
+    if (!origItem || typeof origItem !== 'object') continue;
+    const { item: rawItem } = sanitizePopupRecord(origItem);
     const text = String(rawItem.text || '').trim();
     const attachments = Array.isArray(rawItem.attachments) ? rawItem.attachments.filter(Boolean) : [];
     if (isUnsentCollection && !text && attachments.length === 0) continue;

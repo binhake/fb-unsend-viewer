@@ -488,11 +488,62 @@
     return SYSTEM_NOTICE_PATTERNS.some((regex) => regex.test(realStr));
   }
 
+  function isDashMpdXmlString(str) {
+    if (!str || typeof str !== 'string') return false;
+    const trimmed = unvaultString(str).trim();
+    return (
+      /^<\?xml\b/i.test(trimmed) ||
+      /^<MPD\b/i.test(trimmed) ||
+      trimmed.includes('urn:mpeg:dash:schema:mpd')
+    );
+  }
+
+  function extractDashMpdVideoUrl(str) {
+    if (!str || typeof str !== 'string') return null;
+    const trimmed = unvaultString(str).trim();
+    if (!isDashMpdXmlString(trimmed) || !trimmed.includes('<BaseURL>')) return null;
+
+    let bestVideoUrl = null;
+    let bestBandwidth = -1;
+    let fallbackUrl = null;
+
+    const repRegex = /<Representation\b([^>]*)>[\s\S]*?<BaseURL>([\s\S]*?)<\/BaseURL>/gi;
+    let match;
+    while ((match = repRegex.exec(trimmed)) !== null) {
+      const attrs = match[1] || '';
+      const rawUrl = (match[2] || '').trim().replace(/&amp;/g, '&');
+      if (!/^https?:\/\//i.test(rawUrl)) continue;
+      if (!fallbackUrl) fallbackUrl = rawUrl;
+
+      const isAudio = /mimeType=["']audio\//i.test(attrs);
+      const isVideo = /mimeType=["']video\//i.test(attrs) || !isAudio;
+      if (isVideo) {
+        const bwMatch = attrs.match(/bandwidth=["'](\d+)["']/i);
+        const bw = bwMatch ? parseInt(bwMatch[1], 10) : 0;
+        if (bw >= bestBandwidth) {
+          bestBandwidth = bw;
+          bestVideoUrl = rawUrl;
+        }
+      }
+    }
+
+    if (bestVideoUrl) return bestVideoUrl;
+    if (fallbackUrl) return fallbackUrl;
+
+    const baseMatch = trimmed.match(/<BaseURL>([\s\S]*?)<\/BaseURL>/i);
+    if (baseMatch && baseMatch[1]) {
+      const url = baseMatch[1].trim().replace(/&amp;/g, '&');
+      if (/^https?:\/\//i.test(url)) return url;
+    }
+    return null;
+  }
+
   function isTechnicalString(str) {
     if (!str || typeof str !== 'string') return true;
     const trimmed = unvaultString(str).trim();
     if (trimmed.length === 0) return true;
     if (isSystemNoticeText(trimmed)) return true;
+    if (isDashMpdXmlString(trimmed)) return true;
 
     if (
       (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
@@ -566,6 +617,9 @@
   function extractMediaUrl(str) {
     if (!str || typeof str !== 'string') return null;
     const trimmed = unvaultString(str).trim();
+    if (isDashMpdXmlString(trimmed)) {
+      return extractDashMpdVideoUrl(trimmed);
+    }
     if (
       /^https?:\/\/([a-z0-9-]+\.)*(scontent[a-z0-9-]*|video[a-z0-9-]*|fbcdn\.net|cdn\.fbsbx\.com|lookaside)/i.test(
         trimmed
@@ -797,8 +851,17 @@
         ? unvaultedText.trim()
         : '';
     const cleanAttachments = Array.isArray(attachments)
-      ? attachments.map(unvaultString).filter((u) => u && !isVaultToken(u))
+      ? attachments
+          .map(unvaultString)
+          .map((u) => (isDashMpdXmlString(u) ? extractDashMpdVideoUrl(u) : u))
+          .filter((u) => u && !isVaultToken(u) && !isDashMpdXmlString(u))
       : [];
+    if (unvaultedText && isDashMpdXmlString(unvaultedText)) {
+      const mpdUrl = extractDashMpdVideoUrl(unvaultedText);
+      if (mpdUrl && !cleanAttachments.includes(mpdUrl)) {
+        cleanAttachments.unshift(mpdUrl);
+      }
+    }
 
     const existing =
       capturedMessages.get(messageId) ||
