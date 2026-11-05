@@ -855,7 +855,7 @@ function buildMessageCard(item, ts) {
   if (isSelf) {
     const roleEl = card.querySelector('.msg-role');
     roleEl.classList.add('self');
-    roleEl.textContent = 'Bạn gỡ';
+    roleEl.textContent = 'Bạn';
     roleEl.hidden = false;
   }
 
