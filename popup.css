@@ -4,8 +4,6 @@
  * Licensed under the Non-Commercial & Strict Attribution License.
  * Removing author attribution ("binhake") or unauthorized commercial use is strictly prohibited.
  */
-/* popup.css - Giao diện popup quản lý & sao lưu tin nhắn bị gỡ trên Facebook */
-/* Phong cách bám theo giao diện Facebook (cùng bộ màu với fb-verified-badge) */
 
 /* ===== Design tokens (mặc định sáng, tự đổi tối theo hệ thống) ===== */
 :root {
@@ -475,7 +473,7 @@ button {
   white-space: nowrap;
 }
 
-/* Công tắc gạt kiểu Facebook (giống fb-verified-badge) */
+/* Công tắc gạt kiểu Facebook */
 .switch {
   appearance: none;
   flex: none;
@@ -661,7 +659,7 @@ button {
   white-space: nowrap;
 }
 
-/* Bong bóng chat giống Messenger: xám cho người khác, xanh cho bạn */
+/* Bong bóng chat giống Messenger: xám cho người khác, xanh cho bản thân */
 .msg-bubble {
   align-self: flex-start;
   max-width: 100%;

@@ -4,7 +4,6 @@
  * Licensed under the Non-Commercial & Strict Attribution License.
  * Removing author attribution ("binhake") or unauthorized commercial use is strictly prohibited.
  */
-// content.js - Đồng bộ dữ liệu tin nhắn, lưu trữ cục bộ và khôi phục trực tiếp trên giao diện Facebook
 
 (function () {
   const STORAGE_KEY_MESSAGES = 'fb_captured_messages_v2';
