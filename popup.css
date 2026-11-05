@@ -185,6 +185,9 @@ button {
 .brand-text {
   min-width: 0;
   overflow: hidden;
+  /* Chừa chỗ cho vòng sáng của chấm xanh, không bị cắt khi tỏa ra */
+  margin: -8px 0 -8px -8px;
+  padding: 8px 0 8px 8px;
 }
 
 .brand-status span:last-child {

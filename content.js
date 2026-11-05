@@ -3836,7 +3836,7 @@
   }
 
   // ============================================================================
-  // 3. KHỞI ĐỘNG MUTATION OBSERVER (SAU KHI TRANG TẢI XONG ĐỂ TRÁNH REACT ERROR #418)
+  // 2. KHỞI ĐỘNG MUTATION OBSERVER (SAU KHI TRANG TẢI XONG ĐỂ TRÁNH REACT ERROR #418)
   // ============================================================================
   let domScanScheduled = false;
   function scheduleDomScan() {
