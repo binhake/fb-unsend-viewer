@@ -401,26 +401,60 @@ function buildMediaItem(url) {
   return buildMediaThumb(url);
 }
 
-function findBestAvatarForItem(item, person, isSelf) {
+function extractSenderIdFromRecord(rec, isSelf = false) {
+  if (!rec || typeof rec !== 'object') return '';
+  if (rec.senderId) {
+    return String(rec.senderId).trim().replace(/@(msgr|g\.us|c\.us)$/i, '');
+  }
+  if (!isSelf) {
+    const rawId = String(rec.messageId || rec.originalMessageId || rec.fiberMsgId || '');
+    const m = rawId.match(/^(\d{6,25})@msgr\.\d+$/);
+    if (m) return m[1];
+  }
+  return '';
+}
+
+function findBestAvatarForItem(item, person, thread, isSelf) {
+  const cleanPerson = (person || '').trim().toLowerCase();
+  const cleanThread = (thread || person || '').trim().toLowerCase();
+  const senderId = extractSenderIdFromRecord(item, isSelf);
+  const pools = [appState.unsentMessages, appState.capturedMessages];
+
+  // 1. Ưu tiên tuyệt đối: khớp theo UID (senderId)
+  if (senderId) {
+    for (const list of pools) {
+      if (!Array.isArray(list)) continue;
+      for (const cand of list) {
+        if (!cand || !cand.avatarUrl || !/^https?:\/\//i.test(cand.avatarUrl)) continue;
+        const candNames = parseRecordNames(cand);
+        const candId = extractSenderIdFromRecord(cand, candNames.isSelf);
+        if (candId && candId === senderId) {
+          return cand.avatarUrl.trim();
+        }
+      }
+    }
+  }
+
+  // 2. Dùng avatar đã lưu trực tiếp trên bản ghi
   if (item.avatarUrl && typeof item.avatarUrl === 'string' && /^https?:\/\//i.test(item.avatarUrl)) {
     return item.avatarUrl.trim();
   }
-  const cleanPerson = (person || '').trim().toLowerCase();
-  const senderId = item.senderId ? String(item.senderId) : '';
-  const pools = [appState.unsentMessages, appState.capturedMessages];
+
+  // 3. Dự phòng: chỉ khớp theo ngữ cảnh cùng đoạn chat + cùng người gửi (không bao giờ khớp toàn cục theo tên)
   for (const list of pools) {
     if (!Array.isArray(list)) continue;
     for (const cand of list) {
       if (!cand || !cand.avatarUrl || !/^https?:\/\//i.test(cand.avatarUrl)) continue;
-      if (senderId && cand.senderId && String(cand.senderId) === senderId) {
-        return cand.avatarUrl.trim();
-      }
       const candNames = parseRecordNames(cand);
       if (isSelf && candNames.isSelf) {
         return cand.avatarUrl.trim();
       }
-      if (cleanPerson && candNames.person && candNames.person.toLowerCase() === cleanPerson) {
-        return cand.avatarUrl.trim();
+      if (!isSelf && !candNames.isSelf && cleanPerson) {
+        const candPerson = (candNames.person || '').trim().toLowerCase();
+        const candThread = (candNames.thread || candNames.person || '').trim().toLowerCase();
+        if (candPerson === cleanPerson && candThread === cleanThread) {
+          return cand.avatarUrl.trim();
+        }
       }
     }
   }
@@ -444,7 +478,7 @@ function buildMessageCard(item, ts) {
   avatar.style.background = fallbackBg;
   avatar.textContent = fallbackText;
 
-  const avatarUrl = findBestAvatarForItem(item, person, isSelf);
+  const avatarUrl = findBestAvatarForItem(item, person, thread, isSelf);
   if (avatarUrl) {
     const avatarImg = document.createElement('img');
     avatarImg.className = 'msg-avatar-img';

@@ -95,6 +95,31 @@
     return !id || typeof id !== 'string' || id.startsWith('dom_') || id.startsWith('unsend_');
   }
 
+  function isAuthoritativeMessageId(id) {
+    if (!id || typeof id !== 'string') return false;
+    const clean = id.trim();
+    return (
+      clean.startsWith('mid.$') ||
+      clean.startsWith('wmid.') ||
+      clean.startsWith('otid.') ||
+      /^\d+@(msgr|g\.us)\.\d+$/.test(clean)
+    );
+  }
+
+  function extractPeerIdFromE2EEMsgId(msgId, isSelf = false) {
+    if (!msgId || typeof msgId !== 'string') {
+      return { senderId: '', threadId: '' };
+    }
+    const m = msgId.trim().match(/^(\d+)@(msgr|g\.us)\.(\d+)$/);
+    if (!m) {
+      return { senderId: '', threadId: '' };
+    }
+    return {
+      threadId: m[1],
+      senderId: m[2] === 'msgr' && !isSelf ? m[1] : ''
+    };
+  }
+
   let visibleMessagesSnapshot = new Map();
   let isInitialScanDone = false;
 
@@ -170,40 +195,114 @@
   let currentUserId = '';
   let currentUserFullName = '';
   const personAvatarByIdMap = new Map();
-  const personAvatarByNameMap = new Map();
+  const personAvatarByThreadAndNameMap = new Map();
+  const personIdByThreadAndNameMap = new Map();
 
-  function resolveAvatarForPerson(personName, senderId, isSelf = false, explicitAvatar = '') {
-    if (explicitAvatar && typeof explicitAvatar === 'string' && /^https?:\/\//i.test(explicitAvatar)) {
-      return explicitAvatar.trim();
+  function buildScopedAvatarKey(threadName, personName) {
+    const cleanPerson = (personName || '').trim().toLowerCase();
+    if (!cleanPerson) return '';
+    const cleanThread = (threadName || '').replace(/(?:\.\.\.|…)+$/g, '').trim().toLowerCase();
+    return `${cleanThread || cleanPerson}__${cleanPerson}`;
+  }
+
+  function recordDomAvatarForThreadAndPerson(threadName, personName, avatarUrl, senderId = '') {
+    let updated = false;
+    const scopedKey = buildScopedAvatarKey(threadName, personName);
+    const cleanId = senderId ? String(senderId).trim().replace(/@(msgr|g\.us|c\.us)$/i, '') : '';
+
+    if (cleanId && scopedKey && personIdByThreadAndNameMap.get(scopedKey) !== cleanId) {
+      personIdByThreadAndNameMap.set(scopedKey, cleanId);
+      updated = true;
     }
-    if (senderId && personAvatarByIdMap.has(String(senderId))) {
-      return personAvatarByIdMap.get(String(senderId)) || '';
+
+    if (!avatarUrl || typeof avatarUrl !== 'string' || !/^https?:\/\//i.test(avatarUrl)) {
+      return updated;
+    }
+    const cleanUrl = avatarUrl.trim();
+    if (cleanId && personAvatarByIdMap.get(cleanId) !== cleanUrl) {
+      personAvatarByIdMap.set(cleanId, cleanUrl);
+      updated = true;
+    }
+    if (scopedKey && personAvatarByThreadAndNameMap.get(scopedKey) !== cleanUrl) {
+      personAvatarByThreadAndNameMap.set(scopedKey, cleanUrl);
+      updated = true;
+    }
+    return updated;
+  }
+
+  function resolveAvatarForPerson(
+    personName,
+    senderId,
+    isSelf = false,
+    fallbackAvatar = '',
+    threadName = ''
+  ) {
+    const scopedKey = buildScopedAvatarKey(threadName, personName);
+    const rawSenderId =
+      senderId || (!isSelf && scopedKey ? personIdByThreadAndNameMap.get(scopedKey) || '' : '');
+    const cleanSenderId = rawSenderId
+      ? String(rawSenderId).trim().replace(/@(msgr|g\.us|c\.us)$/i, '')
+      : '';
+    if (cleanSenderId && personAvatarByIdMap.has(cleanSenderId)) {
+      return personAvatarByIdMap.get(cleanSenderId) || '';
     }
     if (isSelf && currentUserId && personAvatarByIdMap.has(String(currentUserId))) {
       return personAvatarByIdMap.get(String(currentUserId)) || '';
     }
-    const cleanPerson = (personName || '').trim().toLowerCase();
-    if (cleanPerson && personAvatarByNameMap.has(cleanPerson)) {
-      return personAvatarByNameMap.get(cleanPerson) || '';
+    if (scopedKey && personAvatarByThreadAndNameMap.has(scopedKey)) {
+      return personAvatarByThreadAndNameMap.get(scopedKey) || '';
     }
-    if (isSelf && currentUserFullName) {
-      const selfLower = currentUserFullName.trim().toLowerCase();
-      if (selfLower && personAvatarByNameMap.has(selfLower)) {
-        return personAvatarByNameMap.get(selfLower) || '';
-      }
+    if (fallbackAvatar && typeof fallbackAvatar === 'string' && /^https?:\/\//i.test(fallbackAvatar)) {
+      return fallbackAvatar.trim();
     }
     return '';
   }
 
   function backfillAvatarsInStoredLists() {
     let changed = false;
+    const knownSenderIdByScopedKey = new Map(personIdByThreadAndNameMap);
+
+    const extractAndIndexIds = (item) => {
+      if (!item || typeof item !== 'object') return;
+      const e2eeIds = extractPeerIdFromE2EEMsgId(
+        item.messageId || item.originalMessageId || item.fiberMsgId || '',
+        Boolean(item.isSelf)
+      );
+      if (!item.threadId && e2eeIds.threadId) {
+        item.threadId = e2eeIds.threadId;
+        changed = true;
+      }
+      if (!item.senderId && e2eeIds.senderId) {
+        item.senderId = e2eeIds.senderId;
+        changed = true;
+      }
+      if (!item.isSelf && item.senderId && item.personName) {
+        const key = buildScopedAvatarKey(item.threadName || item.personName, item.personName);
+        if (key) {
+          knownSenderIdByScopedKey.set(key, String(item.senderId));
+          personIdByThreadAndNameMap.set(key, String(item.senderId));
+        }
+      }
+    };
+
+    unsentMessagesList.forEach(extractAndIndexIds);
+    recentMessagesList.forEach(extractAndIndexIds);
+
     const tryEnrich = (item) => {
       if (!item || typeof item !== 'object') return;
+      if (!item.isSelf && !item.senderId && item.personName) {
+        const key = buildScopedAvatarKey(item.threadName || item.personName, item.personName);
+        if (key && knownSenderIdByScopedKey.has(key)) {
+          item.senderId = knownSenderIdByScopedKey.get(key);
+          changed = true;
+        }
+      }
       const resolved = resolveAvatarForPerson(
         item.personName,
         item.senderId,
         item.isSelf,
-        item.avatarUrl
+        item.avatarUrl,
+        item.threadName
       );
       if (resolved && resolved !== item.avatarUrl) {
         item.avatarUrl = resolved;
@@ -357,16 +456,25 @@
       normalizedBaseText && isAttachmentFilenameText(normalizedBaseText) && cleanAttachments.length > 0
         ? ''
         : normalizedBaseText;
+    const e2eeIds = extractPeerIdFromE2EEMsgId(
+      base.messageId || base.originalMessageId || base.fiberMsgId || '',
+      inferredSelf
+    );
+    const finalSenderId = base.senderId || e2eeIds.senderId || '';
+    const finalThreadId = base.threadId || e2eeIds.threadId || '';
     const resolvedAvatar = resolveAvatarForPerson(
       cleanPerson || base.personName || '',
-      base.senderId,
+      finalSenderId,
       inferredSelf,
-      base.avatarUrl
+      base.avatarUrl,
+      cleanThread
     );
     return {
       ...base,
       text: cleanText,
       isSelf: inferredSelf,
+      senderId: finalSenderId,
+      threadId: finalThreadId,
       personName: cleanPerson || base.personName || '',
       threadName: cleanThread,
       senderName: finalSender,
@@ -689,14 +797,9 @@
           }
         }
       }
-      if (payload.byName && typeof payload.byName === 'object') {
-        for (const [nameKey, url] of Object.entries(payload.byName)) {
-          if (nameKey && typeof url === 'string' && /^https?:\/\//i.test(url)) {
-            personAvatarByNameMap.set(nameKey.toLowerCase(), url);
-          }
-        }
-      }
       backfillAvatarsInStoredLists();
+    } else if (type === 'FB_E2EE_REVOKE_RESOLVED') {
+      handleE2EERevokeResolved(payload);
     } else if (type === 'FB_WS_RECONNECTED') {
       dlog('WS-RECONNECTED', '#00b894', 'Nhận tín hiệu kết nối lại WebSocket, quét lại DOM & Fiber');
       scheduleDomScan();
@@ -921,11 +1024,15 @@
         : rawMergedText;
 
     const finalIsSelf = typeof msg.isSelf === 'boolean' ? msg.isSelf : existing?.isSelf ?? msgIsSelf;
+    const e2eeIds = extractPeerIdFromE2EEMsgId(bestId, finalIsSelf);
+    const resolvedSenderId = msg.senderId || existing?.senderId || e2eeIds.senderId || '';
+    const resolvedThreadId = msg.threadId || existing?.threadId || e2eeIds.threadId || '';
     const resolvedAvatar = resolveAvatarForPerson(
       resolvedPerson,
-      msg.senderId || existing?.senderId,
+      resolvedSenderId,
       finalIsSelf,
-      msg.avatarUrl || existing?.avatarUrl
+      msg.avatarUrl || existing?.avatarUrl,
+      bestThread
     );
 
     const merged = stripDomReferences({
@@ -933,6 +1040,8 @@
       ...msg,
       messageId: bestId,
       isSelf: finalIsSelf,
+      senderId: resolvedSenderId,
+      threadId: resolvedThreadId,
       text: cleanMergedText,
       attachments: combinedAttachments,
       personName: resolvedPerson,
@@ -1064,11 +1173,20 @@
           ? ''
           : rawMergedText;
 
+      const e2eeIds = extractPeerIdFromE2EEMsgId(
+        bestId || newRecord.originalMessageId || '',
+        recIsSelf
+      );
+      const resolvedSenderId =
+        newRecord.senderId || existingItem.senderId || e2eeIds.senderId || '';
+      const resolvedThreadId =
+        newRecord.threadId || existingItem.threadId || e2eeIds.threadId || '';
       const resolvedAvatar = resolveAvatarForPerson(
         bestPerson,
-        newRecord.senderId || existingItem.senderId,
+        resolvedSenderId,
         recIsSelf,
-        newRecord.avatarUrl || existingItem.avatarUrl
+        newRecord.avatarUrl || existingItem.avatarUrl,
+        bestThread
       );
 
       const merged = stripDomReferences({
@@ -1076,6 +1194,8 @@
         ...newRecord,
         messageId: bestId,
         isSelf: recIsSelf,
+        senderId: resolvedSenderId,
+        threadId: resolvedThreadId,
         text: finalMergedText,
         attachments: mergedAttachments,
         personName: bestPerson,
@@ -1121,17 +1241,26 @@
         ? ''
         : cleanText;
 
+    const newE2eeIds = extractPeerIdFromE2EEMsgId(
+      newRecord.messageId || newRecord.originalMessageId || '',
+      recIsSelf
+    );
+    const finalSenderId = newRecord.senderId || newE2eeIds.senderId || '';
+    const finalThreadId = newRecord.threadId || newE2eeIds.threadId || '';
     const finalAvatar = resolveAvatarForPerson(
       newRecord.personName,
-      newRecord.senderId,
+      finalSenderId,
       recIsSelf,
-      newRecord.avatarUrl
+      newRecord.avatarUrl,
+      newRecord.threadName
     );
 
     const finalRecord = stripDomReferences({
       ...newRecord,
       text: finalCleanText,
       isSelf: recIsSelf,
+      senderId: finalSenderId,
+      threadId: finalThreadId,
       avatarUrl: finalAvatar,
       attachments: cleanAttachments,
       timestamp: newRecord.timestamp || getMonotonicTimestamp(),
@@ -1253,6 +1382,69 @@
     setTimeout(() => scanChatMessagesInDom(record), 60);
     setTimeout(() => scanChatMessagesInDom(record), 300);
     setTimeout(() => scanChatMessagesInDom(record), 600);
+  }
+
+  function handleE2EERevokeResolved(payload) {
+    if (!payload || !payload.revokedMsgId) return;
+    const {
+      revokedMsgId,
+      originalMsgId,
+      timestampMs,
+      senderId,
+      threadId,
+      isSelf
+    } = payload;
+
+    let matchedRecord = null;
+    if (originalMsgId && messagesById.has(originalMsgId)) {
+      matchedRecord = messagesById.get(originalMsgId);
+    }
+
+    if (!matchedRecord && typeof timestampMs === 'number' && timestampMs > 0) {
+      let bestTimeDiff = 2800;
+      for (const rec of recentMessagesList) {
+        if (!rec || (!rec.text && (!rec.attachments || rec.attachments.length === 0))) continue;
+        if (typeof isSelf === 'boolean' && typeof rec.isSelf === 'boolean' && rec.isSelf !== isSelf) {
+          continue;
+        }
+        const diff = Math.abs((rec.timestamp || 0) - timestampMs);
+        if (diff <= bestTimeDiff) {
+          bestTimeDiff = diff;
+          matchedRecord = rec;
+        }
+      }
+    }
+
+    if (matchedRecord && (matchedRecord.text || (matchedRecord.attachments && matchedRecord.attachments.length > 0))) {
+      dlog('E2EE-REVOKE-LINKED', '#00b894', 'Liên kết thành công dòng gỡ E2EE @msgr. với tin nhắn đã bắt:', {
+        revokedMsgId,
+        originalMsgId,
+        matchedId: matchedRecord.messageId,
+        text: matchedRecord.text
+      });
+      const aliased = {
+        ...matchedRecord,
+        messageId: revokedMsgId,
+        originalMessageId: originalMsgId || matchedRecord.messageId,
+        senderId: senderId || matchedRecord.senderId || '',
+        threadId: threadId || matchedRecord.threadId || '',
+        timestamp: timestampMs || matchedRecord.timestamp || getMonotonicTimestamp()
+      };
+      messagesById.set(revokedMsgId, aliased);
+      handleUnsentEvent({
+        messageId: revokedMsgId,
+        rawMessageId: originalMsgId || matchedRecord.messageId,
+        text: matchedRecord.text || '',
+        attachments: matchedRecord.attachments || [],
+        senderId: aliased.senderId,
+        threadId: aliased.threadId,
+        personName: matchedRecord.personName || '',
+        threadName: matchedRecord.threadName || '',
+        senderName: matchedRecord.senderName || '',
+        isSelf: typeof isSelf === 'boolean' ? isSelf : matchedRecord.isSelf,
+        timestamp: aliased.timestamp
+      });
+    }
   }
 
   const ARIA_CONVERSATION_PREFIX_REGEX =
@@ -1607,7 +1799,6 @@
         const alt = (imgEl.getAttribute('alt') || '').trim();
         if (/^(Đã xem|Seen by)/i.test(alt)) continue;
         if (cleanSenderLower && alt && alt.toLowerCase() === cleanSenderLower) {
-          personAvatarByNameMap.set(cleanSenderLower, src);
           return src;
         }
         const rect = imgEl.getBoundingClientRect();
@@ -1618,9 +1809,6 @@
         const isLeftSide =
           rowRect.width <= 0 || rect.left <= rowRect.left + Math.min(90, rowRect.width * 0.35);
         if (w >= 22 && w <= 52 && h >= 22 && h <= 52 && isLeftSide) {
-          if (cleanSenderLower && !isSelfKeyword(cleanSenderLower)) {
-            personAvatarByNameMap.set(cleanSenderLower, src);
-          }
           return src;
         }
       }
@@ -1643,9 +1831,6 @@
         if (/^(Đã xem|Seen by)/i.test(aria)) continue;
         const rect = (svgEl || svgImg).getBoundingClientRect();
         if (rect.width >= 22 && rect.width <= 52 && rect.height >= 22 && rect.height <= 52) {
-          if (cleanSenderLower && !isSelfKeyword(cleanSenderLower)) {
-            personAvatarByNameMap.set(cleanSenderLower, href);
-          }
           return href;
         }
       }
@@ -1678,8 +1863,8 @@
     const isMidChanged = Boolean(
       currentFiberId &&
         restoredMid &&
-        currentFiberId.startsWith('mid.$') &&
-        restoredMid.startsWith('mid.$') &&
+        isAuthoritativeMessageId(currentFiberId) &&
+        isAuthoritativeMessageId(restoredMid) &&
         currentFiberId !== restoredMid
     );
 
@@ -2238,9 +2423,9 @@
             const rowFiber = getRowMessageId(targetRow.rowEl);
             if (
               rowFiber &&
-              rowFiber.startsWith('mid.$') &&
+              isAuthoritativeMessageId(rowFiber) &&
               record.messageId &&
-              record.messageId.startsWith('mid.$') &&
+              isAuthoritativeMessageId(record.messageId) &&
               rowFiber !== record.messageId &&
               rowFiber !== record.originalMessageId
             ) {
@@ -2373,14 +2558,29 @@
       rowEl.dataset.fbUnsendIsSelf = analysis.isSelf ? 'true' : 'false';
 
       if (analysis.isUnsentRow) {
+        const unsentFiberId = getRowMessageId(rowEl);
+        const unsentE2eeIds = extractPeerIdFromE2EEMsgId(unsentFiberId, analysis.isSelf);
         if (
-          analysis.rowAvatarUrl &&
           !analysis.isSelf &&
-          (noticePerson || analysis.rowSenderName || inheritedOtherSender)
+          (noticePerson || analysis.rowSenderName || inheritedOtherSender || threadName)
         ) {
-          const avPerson = (noticePerson || analysis.rowSenderName || inheritedOtherSender).trim().toLowerCase();
+          const avPerson = (
+            noticePerson ||
+            analysis.rowSenderName ||
+            inheritedOtherSender ||
+            threadName
+          ).trim();
           if (avPerson && !isSelfKeyword(avPerson)) {
-            personAvatarByNameMap.set(avPerson, analysis.rowAvatarUrl);
+            if (
+              recordDomAvatarForThreadAndPerson(
+                threadName,
+                avPerson,
+                analysis.rowAvatarUrl,
+                unsentE2eeIds.senderId
+              )
+            ) {
+              backfillAvatarsInStoredLists();
+            }
           }
         }
         if (!analysis.alreadyRestored && analysis.unsentNoticeEl) {
@@ -2464,8 +2664,18 @@
               inheritedOtherSender
             );
 
-        if (analysis.rowAvatarUrl && personName && !analysis.isSelf && !isGenericSenderName(personName)) {
-          personAvatarByNameMap.set(personName.toLowerCase(), analysis.rowAvatarUrl);
+        const e2eePeerIds = extractPeerIdFromE2EEMsgId(msgId, analysis.isSelf);
+        if (personName && !analysis.isSelf && !isGenericSenderName(personName)) {
+          if (
+            recordDomAvatarForThreadAndPerson(
+              threadName,
+              personName,
+              analysis.rowAvatarUrl,
+              e2eePeerIds.senderId
+            )
+          ) {
+            backfillAvatarsInStoredLists();
+          }
         }
 
         if (analysis.text) {
@@ -2487,16 +2697,23 @@
         );
 
         const existingById = messagesById.get(msgId);
+        const resolvedSenderId =
+          existingById?.senderId || safePrev?.senderId || e2eePeerIds.senderId || '';
+        const resolvedThreadId =
+          existingById?.threadId || safePrev?.threadId || e2eePeerIds.threadId || '';
         const resolvedAvatarUrl = resolveAvatarForPerson(
           personName,
-          existingById?.senderId || safePrev?.senderId,
+          resolvedSenderId,
           analysis.isSelf,
-          analysis.rowAvatarUrl || safePrev?.avatarUrl || existingById?.avatarUrl
+          analysis.rowAvatarUrl || safePrev?.avatarUrl || existingById?.avatarUrl,
+          threadName
         );
         const record = {
           messageId: msgId,
           fiberMsgId: fiberMsgId || safePrev?.fiberMsgId || '',
           isSelf: analysis.isSelf,
+          senderId: resolvedSenderId,
+          threadId: resolvedThreadId,
           text: analysis.text || safePrev?.text || '',
           attachments: cleanAttachments,
           personName,
@@ -2648,9 +2865,9 @@
           }
           if (
             fiberId &&
-            fiberId.startsWith('mid.$') &&
+            isAuthoritativeMessageId(fiberId) &&
             cand.messageId &&
-            cand.messageId.startsWith('mid.$')
+            isAuthoritativeMessageId(cand.messageId)
           ) {
             return cand.messageId === fiberId || cand.originalMessageId === fiberId;
           }
@@ -2814,10 +3031,17 @@
             cleanRestored.senderName || ''
           );
 
+          const initialMsgId =
+            fiberId || cleanRestored.messageId || `unsend_${getMonotonicTimestamp()}`;
+          const rowE2eeIds = extractPeerIdFromE2EEMsgId(initialMsgId, isSelf);
+          const bestSenderId = cleanRestored.senderId || rowE2eeIds.senderId || '';
+          const bestThreadId = cleanRestored.threadId || rowE2eeIds.threadId || '';
+
           if (restoredFromHistory && cleanRestored.messageId) {
             rowEl.dataset.fbUnsendMatchedId = cleanRestored.messageId;
             const needsHistoryEnrich = Boolean(
               !restored.hasNativePlaceholder ||
+                (bestSenderId && bestSenderId !== (restored.senderId || '')) ||
                 (bestPersonName && bestPersonName !== (restored.personName || '')) ||
                 (bestThreadName && bestThreadName !== (restored.threadName || '')) ||
                 (bestAnchor && !restored.anchorAboveText) ||
@@ -2828,13 +3052,12 @@
             }
           }
 
-          const initialMsgId =
-            fiberId || cleanRestored.messageId || `unsend_${getMonotonicTimestamp()}`;
-
           const { record: syncedRecord } = upsertUnsentRecord({
             messageId: initialMsgId,
             originalMessageId: cleanRestored.messageId || '',
             isSelf,
+            senderId: bestSenderId,
+            threadId: bestThreadId,
             text: cleanRestored.text || '',
             attachments: cleanRestored.attachments || [],
             personName: bestPersonName,

@@ -71,7 +71,6 @@
   const vaultMap = new Map();
   const contactNameMap = new Map();
   const contactAvatarMap = new Map();
-  const contactAvatarByNameMap = new Map();
   const threadNameMap = new Map();
   const seenE2EETexts = new Map();
   let lastE2EEMessageId = null;
@@ -519,6 +518,7 @@
     }
 
     if (/^\d{12,25}$/.test(trimmed)) return true;
+    if (/^\d+@(msgr|g\.us|c\.us)(\.\d+)?$/i.test(trimmed)) return true;
 
     if (
       (trimmed.includes('datr=') && trimmed.includes('c_user=')) ||
@@ -588,15 +588,41 @@
     return ts < PAGE_LOAD_TIME - 15 * 1000;
   }
 
+  function isMessageIdString(str) {
+    if (!str || typeof str !== 'string') return false;
+    const clean = str.trim();
+    return (
+      clean.startsWith('mid.$') ||
+      clean.startsWith('wmid.') ||
+      clean.startsWith('otid.') ||
+      clean.startsWith('ee.mid.$') ||
+      /^\d+@(msgr|g\.us)\.\d+$/.test(clean)
+    );
+  }
+
+  function extractIdsFromE2EEMsgId(msgId) {
+    if (!msgId || typeof msgId !== 'string') {
+      return { threadId: '', peerUserId: '', stanzaId: '' };
+    }
+    const m = msgId.trim().match(/^(\d+)@(msgr|g\.us)\.(\d+)$/);
+    if (!m) {
+      return { threadId: '', peerUserId: '', stanzaId: '' };
+    }
+    return {
+      threadId: m[1],
+      peerUserId: m[2] === 'msgr' ? m[1] : '',
+      stanzaId: m[3]
+    };
+  }
+
   let avatarEmitTimer = null;
   function scheduleEmitContactAvatars() {
     if (avatarEmitTimer) return;
     avatarEmitTimer = setTimeout(() => {
       avatarEmitTimer = null;
-      if (contactAvatarMap.size === 0 && contactAvatarByNameMap.size === 0) return;
+      if (contactAvatarMap.size === 0) return;
       emitToContentScript('FB_CONTACT_AVATARS_UPDATED', {
-        byId: Object.fromEntries(contactAvatarMap.entries()),
-        byName: Object.fromEntries(contactAvatarByNameMap.entries())
+        byId: Object.fromEntries(contactAvatarMap.entries())
       });
     }, 350);
   }
@@ -631,11 +657,8 @@
         if (cId && cName) {
           contactNameMap.set(cId, cName);
         }
-        if (picUrl && /^https?:\/\//i.test(picUrl)) {
-          if (cId) contactAvatarMap.set(cId, picUrl);
-          if (cName) {
-            contactAvatarByNameMap.set(cName.toLowerCase(), picUrl);
-          }
+        if (cId && picUrl && /^https?:\/\//i.test(picUrl)) {
+          contactAvatarMap.set(cId, picUrl);
           added++;
         }
       }
@@ -648,18 +671,17 @@
   }
 
   function resolveContactAndThreadName(senderId, threadId, explicitSenderName = '', explicitThreadName = '') {
-    const cleanSenderId = senderId ? String(senderId).trim() : '';
-    const cleanThreadId = threadId ? String(threadId).trim() : '';
+    const cleanSenderId = senderId ? String(senderId).trim().replace(/@(msgr|g\.us|c\.us)$/i, '') : '';
+    const cleanThreadId = threadId ? String(threadId).trim().replace(/@(msgr|g\.us|c\.us)$/i, '') : '';
 
     const mappedContact = cleanSenderId ? contactNameMap.get(cleanSenderId) || '' : '';
-    const mappedThread = cleanThreadId ? threadNameMap.get(cleanThreadId) || '' : '';
+    const mappedThread = cleanThreadId
+      ? threadNameMap.get(cleanThreadId) || contactNameMap.get(cleanThreadId) || ''
+      : '';
 
     const finalPersonName = explicitSenderName || mappedContact || '';
     const finalThreadName = explicitThreadName || mappedThread || '';
-    const avatarUrl =
-      (cleanSenderId && contactAvatarMap.get(cleanSenderId)) ||
-      (finalPersonName && contactAvatarByNameMap.get(finalPersonName.toLowerCase())) ||
-      '';
+    const avatarUrl = (cleanSenderId && contactAvatarMap.get(cleanSenderId)) || '';
 
     let combinedName = '';
     if (finalPersonName && finalThreadName) {
@@ -694,12 +716,24 @@
       threadName,
       attachments,
       timestamp,
-      source
+      source,
+      isSelf,
+      allowHistoricalCapture
     } = msgData;
     if (!messageId) return;
-    if (isOldHistoricalTimestamp(timestamp)) return;
+    if (allowHistoricalCapture) {
+      if (!timestamp || typeof timestamp !== 'number' || Date.now() - timestamp > 7 * 86400 * 1000) {
+        return;
+      }
+    } else if (isOldHistoricalTimestamp(timestamp)) {
+      return;
+    }
 
     messageId = resolveCanonicalMessageId(messageId);
+    const e2eeIds = extractIdsFromE2EEMsgId(messageId);
+    if (e2eeIds.stanzaId && e2eeIds.stanzaId !== messageId) {
+      aliasIdMap.set(e2eeIds.stanzaId, messageId);
+    }
     if (Array.isArray(altIds)) {
       for (const alt of altIds) {
         if (alt) {
@@ -768,8 +802,12 @@
       }
     }
 
-    const finalSenderId = senderId || existing?.senderId || '';
-    const finalThreadId = threadId || existing?.threadId || '';
+    const finalSenderId = String(
+      senderId || existing?.senderId || (isSelf === false ? e2eeIds.peerUserId : '') || ''
+    ).replace(/@(msgr|g\.us|c\.us)$/i, '');
+    const finalThreadId = String(
+      threadId || existing?.threadId || e2eeIds.threadId || ''
+    ).replace(/@(msgr|g\.us|c\.us)$/i, '');
     const resolvedNames = resolveContactAndThreadName(
       finalSenderId,
       finalThreadId,
@@ -788,6 +826,7 @@
       text: finalText,
       senderId: finalSenderId,
       threadId: finalThreadId,
+      isSelf: typeof isSelf === 'boolean' ? isSelf : existing?.isSelf,
       senderName: resolvedNames.senderName || existing?.senderName || '',
       personName: resolvedNames.personName || existing?.personName || '',
       threadName: resolvedNames.threadName || existing?.threadName || '',
@@ -819,9 +858,14 @@
 
     const existing = capturedMessages.get(messageId);
     const noticeSenderName = extractNameFromNoticeText(extraInfo.unsendNotice || '');
+    const e2eeIds = extractIdsFromE2EEMsgId(messageId);
 
-    const finalSenderId = extraInfo.senderId || existing?.senderId || '';
-    const finalThreadId = extraInfo.threadId || existing?.threadId || '';
+    const finalSenderId = String(
+      extraInfo.senderId || existing?.senderId || (extraInfo.isSelf === false ? e2eeIds.peerUserId : '') || ''
+    ).replace(/@(msgr|g\.us|c\.us)$/i, '');
+    const finalThreadId = String(
+      extraInfo.threadId || existing?.threadId || e2eeIds.threadId || ''
+    ).replace(/@(msgr|g\.us|c\.us)$/i, '');
     const resolvedNames = resolveContactAndThreadName(
       finalSenderId,
       finalThreadId,
@@ -970,10 +1014,6 @@
         }
         if (foundAvatar) {
           contactAvatarMap.set(contactId, foundAvatar);
-          const nameKey = (foundName || contactNameMap.get(contactId) || '').trim().toLowerCase();
-          if (nameKey) {
-            contactAvatarByNameMap.set(nameKey, foundAvatar);
-          }
           scheduleEmitContactAvatars();
         }
       }
@@ -1032,6 +1072,51 @@
           if (deepUnsupportedInspector.e2eeRavenExtracted.length > 20) {
             deepUnsupportedInspector.e2eeRavenExtracted.shift();
           }
+        }
+      } catch (_) {}
+    }
+
+    if (
+      /^(Mps(MessageToBridge|MessageTextToBridge|MediaToBridge|RevokeMessageToBridgeMsg|XmaToBridge|NoteReplyToBridge)|MAW(BridgeBuildMsg|BridgeMsg|BridgeNewMsgHandler))(\.|$)/i.test(
+        moduleName
+      )
+    ) {
+      try {
+        const arg0 = args[0];
+        const msgWrapper = arg0?.message || (typeof arg0?.deserialize === 'function' ? arg0 : null);
+        if (msgWrapper) {
+          inspectE2EERawMessageFromMps(msgWrapper, arg0?.toplevelProtobuf ? arg0 : null);
+        }
+        const bridgeCandidates = [];
+        if (returnValue && typeof returnValue === 'object') {
+          if (returnValue.kind === 'bridgeMsg' && returnValue.value) {
+            bridgeCandidates.push(returnValue.value);
+          } else if (returnValue.topLevel?.kind === 'bridgeMsg' && returnValue.topLevel?.value) {
+            bridgeCandidates.push(returnValue.topLevel.value);
+          } else if (returnValue.messageId && returnValue.timestampMs !== undefined) {
+            bridgeCandidates.push(returnValue);
+          }
+        }
+        for (const a of args) {
+          if (!a || typeof a !== 'object') continue;
+          if (Array.isArray(a)) {
+            for (const item of a) {
+              if (item && typeof item === 'object' && (item.msgId || item.messageId)) {
+                bridgeCandidates.push(item);
+              }
+            }
+          } else if (a.msgId || a.messageId) {
+            bridgeCandidates.push(a);
+          } else if (a.topLevel?.kind === 'bridgeMsg' && a.topLevel?.value) {
+            bridgeCandidates.push(a.topLevel.value);
+          }
+        }
+        for (const bMsg of bridgeCandidates) {
+          inspectPlainObject(bMsg, 0, {
+            fromRealtime: true,
+            currentFunc: moduleName,
+            source: `MpsBridge:${moduleName}`
+          });
         }
       } catch (_) {}
     }
@@ -1145,11 +1230,7 @@
 
       if (typeof arg === 'string') {
         const unvaulted = unvaultString(arg).trim();
-        if (
-          unvaulted.startsWith('mid.$') ||
-          unvaulted.startsWith('wmid.') ||
-          unvaulted.startsWith('otid.')
-        ) {
+        if (isMessageIdString(unvaulted) && !unvaulted.startsWith('ee.mid.$')) {
           msgIds.push(unvaulted);
         } else if (unvaulted.startsWith('ee.mid.$')) {
           altIds.push(unvaulted.replace(/^ee\./, ''));
@@ -1433,10 +1514,10 @@
   }
 
   const SAFE_TARGET_MODULE_REGEX =
-    /^(LS(UpsertMessage|DeleteThenInsertMessage|InsertMessage|ReplaceOptimisticMessage|DeleteMessage|DeleteMessageRequest|MarkMessageUnsent|HandleUnsendMessage|UpdateMessage|InsertBlobAttachment|InsertAttachment|InsertXmaAttachment|InsertStickerAttachment|VerifyContactRowExists|UpdateOrInsertContact|UpsertContact|UpdateOrInsertThread|VerifyHybridThreadExists|UpsertThread)|MAW(UnvaultTransform|Vault|ThreadSnippetFor.*Msg|BridgeBuildThreadSnippet)|MpsRavenToBridge)$/i;
+    /^(LS(UpsertMessage|DeleteThenInsertMessage|InsertMessage|ReplaceOptimisticMessage|DeleteMessage|DeleteMessageRequest|MarkMessageUnsent|HandleUnsendMessage|UpdateMessage|InsertBlobAttachment|InsertAttachment|InsertXmaAttachment|InsertStickerAttachment|VerifyContactRowExists|UpdateOrInsertContact|UpsertContact|UpdateOrInsertThread|VerifyHybridThreadExists|UpsertThread)|MAW(UnvaultTransform|Vault|ThreadSnippetFor.*Msg|BridgeBuildThreadSnippet|BridgeBuildMsg|BridgeMsg|BridgeNewMsgHandler|BridgeNewMediaHandler)|Mps(RavenToBridge|MessageToBridge|MessageTextToBridge|MediaToBridge|RevokeMessageToBridgeMsg|XmaToBridge|NoteReplyToBridge))$/i;
 
   const PASSIVE_EXPORT_CAPTURE_REGEX =
-    /^(Mps(OverBridge|RavenToBridge|MediaToBridge|MessageToBridge|MessageToBridgeWrapper|MessageToLoadResponse|ToBridgeMessageId|Types|LoadMessagesStep|ReactionSupplementals)|MAW(ProtobufDeserializers|AttachmentBlob\.react|GetAttachmentThumbnailBlob|DbMedia|MediaDownloadStatusBackendFetcher|DownloadMediaInWorker|DownloadMediaInWorkerDeferred|BridgeNewMsgHandler|BridgeNewMediaHandler|BridgeBuildMsg|BridgeSendAndReceive|MediaManagerUtils|MediaUtils)|WAMediaTransport\.pb|WAArmadilloApplication\.pb|WAConsumerApplication\.pb|WAHashUtils|WAByteArray|decodeProtobuf|LSDatabaseSingleton|ReQL)$/i;
+    /^(Mps(OverBridge|RavenToBridge|MediaToBridge|MessageToBridge|MessageTextToBridge|RevokeMessageToBridgeMsg|MessageToBridgeWrapper|MessageToLoadResponse|ToBridgeMessageId|Types|LoadMessagesStep|ReactionSupplementals)|MAW(ProtobufDeserializers|AttachmentBlob\.react|GetAttachmentThumbnailBlob|DbMedia|MediaDownloadStatusBackendFetcher|DownloadMediaInWorker|DownloadMediaInWorkerDeferred|BridgeNewMsgHandler|BridgeNewMediaHandler|BridgeBuildMsg|BridgeSendAndReceive|MediaManagerUtils|MediaUtils)|WAMediaTransport\.pb|WAArmadilloApplication\.pb|WAConsumerApplication\.pb|WAHashUtils|WAByteArray|decodeProtobuf|LSDatabaseSingleton|ReQL)$/i;
 
   const INTERESTING_MODULE_NAME_REGEX =
     /^Mps[A-Z]|Attachment|Ephemeral|ViewOnce|Unsupported|MediaFallback|LightspeedRequest|LSPlatform|SyncParams|LSVersion|Capabilit|Xma|Raven|MAWDbMedia|MAWMedia|MAWBridge|WAMedia|WAArmadillo/i;
@@ -1849,6 +1930,140 @@
     }
   }
 
+  const emittedRevokeMsgIds = new Set();
+
+  function extractRevokedStanzaIdFromBytes(payloadBytes, currentStanzaId = '') {
+    try {
+      if (!payloadBytes) return '';
+      const decodedAscii = safeDecodeBuffer(payloadBytes);
+      if (!decodedAscii) return '';
+      const matches = decodedAscii.match(/\d{15,22}/g);
+      if (!matches) return '';
+      for (const m of matches) {
+        if (m !== currentStanzaId && m.length >= 16 && m.length <= 21) {
+          return m;
+        }
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  function inspectE2EERawMessageFromMps(msgWrapper, rawMsgObj = null) {
+    try {
+      const deserMod = getFbModule('MAWProtobufDeserializers');
+      const topProto = rawMsgObj?.toplevelProtobuf || msgWrapper?.message || null;
+      if (!topProto && !msgWrapper) return null;
+
+      let topBackup = null;
+      try {
+        topBackup = msgWrapper?.deserialize?.();
+      } catch (_) {}
+      if (!topBackup && deserMod?.DeserializedBackupMessage?.create && topProto?.payload) {
+        try {
+          topBackup = deserMod.DeserializedBackupMessage.create(topProto.payload);
+        } catch (_) {}
+      }
+
+      const rawThreadId = String(topProto?.threadId || msgWrapper?.getChatJid?.() || '').trim();
+      const stanzaId = String(topProto?.messageId || msgWrapper?.getExternalId?.() || '').trim();
+      const fullMsgId =
+        msgWrapper?.getMsgId?.() ||
+        (rawThreadId && stanzaId ? `${rawThreadId}.${stanzaId}` : '') ||
+        '';
+      if (!fullMsgId) return null;
+
+      const cleanThreadId = rawThreadId.replace(/@(msgr|g\.us|c\.us)$/i, '');
+      const cleanSenderId = String(topProto?.senderId || '').trim().replace(/@(msgr|g\.us|c\.us)$/i, '');
+      const timestampMs = Number(topProto?.timestampMs) || Date.now();
+      let isAuthorMe = false;
+      try {
+        isAuthorMe = Boolean(msgWrapper?.isAuthorMe?.());
+      } catch (_) {
+        if (cleanSenderId && cleanThreadId && /@msgr$/i.test(rawThreadId)) {
+          isAuthorMe = cleanSenderId !== cleanThreadId;
+        }
+      }
+
+      const topEnc = topBackup?.encryptedTransportMessage?.();
+      const consumerMsg = topEnc?.consumerMessage?.();
+      const revokeObj = consumerMsg?.payload?.applicationData?.revoke || null;
+      const textObj = consumerMsg?.payload?.content?.messageText || null;
+
+      let revokedStanzaId = String(revokeObj?.key?.id || '').trim();
+      if (!revokedStanzaId && !textObj?.text && topProto?.payload) {
+        const asciiCheck = safeDecodeBuffer(topProto.payload);
+        if (asciiCheck && /@(msgr|g\.us)/.test(asciiCheck) && asciiCheck.length <= 160) {
+          revokedStanzaId = extractRevokedStanzaIdFromBytes(topProto.payload, stanzaId);
+        }
+      }
+
+      if (revokeObj || revokedStanzaId) {
+        const originalMsgId =
+          revokedStanzaId && rawThreadId ? `${rawThreadId}.${revokedStanzaId}` : '';
+        if (originalMsgId && originalMsgId !== fullMsgId) {
+          aliasIdMap.set(fullMsgId, originalMsgId);
+          aliasIdMap.set(revokedStanzaId, originalMsgId);
+        }
+        if (!emittedRevokeMsgIds.has(fullMsgId)) {
+          emittedRevokeMsgIds.add(fullMsgId);
+          const resolvedNames = resolveContactAndThreadName(cleanSenderId, cleanThreadId);
+          emitToContentScript('FB_E2EE_REVOKE_RESOLVED', {
+            revokeMsgId: fullMsgId,
+            originalMsgId,
+            originalStanzaId: revokedStanzaId,
+            senderId: cleanSenderId,
+            threadId: cleanThreadId,
+            personName: resolvedNames.personName || '',
+            threadName: resolvedNames.threadName || '',
+            senderName: resolvedNames.senderName || '',
+            avatarUrl: resolvedNames.avatarUrl || '',
+            timestampMs,
+            isSelf: isAuthorMe
+          });
+        }
+        return {
+          type: 'revoke',
+          msgId: fullMsgId,
+          originalMsgId,
+          originalStanzaId: revokedStanzaId,
+          senderId: cleanSenderId,
+          threadId: cleanThreadId,
+          timestampMs,
+          isSelf: isAuthorMe
+        };
+      }
+
+      const rawText = typeof textObj?.text === 'string' ? unvaultString(textObj.text).trim() : '';
+      const specialSize = consumerMsg?.metadata?.specialTextSize;
+      const finalText =
+        rawText || (specialSize >= 1 && specialSize <= 3 ? '👍' : '');
+      if (finalText && !isTechnicalString(finalText)) {
+        registerCapturedMessage({
+          messageId: fullMsgId,
+          altIds: [stanzaId].filter(Boolean),
+          text: finalText,
+          senderId: cleanSenderId,
+          threadId: cleanThreadId,
+          isSelf: isAuthorMe,
+          attachments: [],
+          timestamp: timestampMs,
+          source: 'MpsOverBridge-E2EE',
+          allowHistoricalCapture: true
+        });
+        return {
+          type: 'text',
+          msgId: fullMsgId,
+          text: finalText,
+          senderId: cleanSenderId,
+          threadId: cleanThreadId,
+          timestampMs,
+          isSelf: isAuthorMe
+        };
+      }
+    } catch (_) {}
+    return null;
+  }
+
   async function inspectE2EERavenMessagesFromMps(fullMsgId) {
     try {
       if (!fullMsgId || !/@(msgr|g\.us)\./.test(fullMsgId)) return;
@@ -1911,6 +2126,10 @@
           const w = wrapperMod?.MpsMessageToBridgeWrapper?.fromTopLevel
             ? wrapperMod.MpsMessageToBridgeWrapper.fromTopLevel(rawMsg.toplevelProtobuf)
             : null;
+          const mpsDecoded = inspectE2EERawMessageFromMps(w, rawMsg);
+          if (mpsDecoded) {
+            extractedItems.push(mpsDecoded);
+          }
           const ravenInfo = decodeRavenFromProtobufWrapper(
             w,
             rawMsg.supplementalProtobufs,
@@ -2084,11 +2303,7 @@
         const item = node[i];
         if (typeof item === 'string') {
           const trimmed = unvaultString(item).trim();
-          if (
-            trimmed.startsWith('mid.$') ||
-            trimmed.startsWith('wmid.') ||
-            trimmed.startsWith('otid.')
-          ) {
+          if (isMessageIdString(trimmed) && !trimmed.startsWith('ee.mid.$')) {
             directMsgIds.push(trimmed);
           } else if (trimmed.startsWith('ee.mid.$')) {
             directAltIds.push(trimmed.replace(/^ee\./, ''));
@@ -2128,7 +2343,6 @@
           contactNameMap.set(cId, cName);
           if (directMediaUrls.length > 0 && /^https?:\/\//i.test(directMediaUrls[0])) {
             contactAvatarMap.set(cId, directMediaUrls[0]);
-            contactAvatarByNameMap.set(cName.toLowerCase(), directMediaUrls[0]);
             scheduleEmitContactAvatars();
           }
         }
@@ -2287,12 +2501,20 @@
           } else if (Array.isArray(obj.timestampMs)) {
             const parsedTs = parseLSInt64(obj.timestampMs);
             if (parsedTs) timestamp = Number(parsedTs);
+          } else if (typeof obj.sortOrderMs === 'number') {
+            timestamp = obj.sortOrderMs;
+          } else if (Array.isArray(obj.sortOrderMs)) {
+            const parsedSort = parseLSInt64(obj.sortOrderMs);
+            if (parsedSort) timestamp = Number(parsedSort);
           } else if (typeof obj.timestamp === 'number') {
             timestamp = obj.timestamp;
+          } else if (typeof obj.ts === 'number') {
+            timestamp = obj.ts < 10000000000 ? obj.ts * 1000 : obj.ts;
           }
 
           const altIds = [
             obj.messageId,
+            obj.msgId,
             obj.externalId,
             obj.offlineThreadingId,
             obj.otid,
@@ -2313,13 +2535,26 @@
           const textContent =
             typeof rawTextContent === 'string' ? unvaultString(rawTextContent) : rawTextContent;
 
-          const senderId = String(
-            obj.senderId || obj.sender_id || obj.author || obj.actorId || obj.from || ''
-          );
-          const threadId = String(
-            obj.threadId || obj.thread_id || obj.threadKey || obj.threadFbId || obj.chatId || ''
-          );
+          const rawSenderVal =
+            obj.senderId || obj.sender_id || obj.sender || obj.author || obj.actorId || obj.from || '';
+          const senderId = Array.isArray(rawSenderVal)
+            ? parseLSInt64(rawSenderVal) || ''
+            : String(rawSenderVal).replace(/@(msgr|g\.us|c\.us)$/i, '');
+          const rawThreadVal =
+            obj.threadId ||
+            obj.thread_id ||
+            obj.threadKey ||
+            obj.threadFbId ||
+            obj.chatId ||
+            obj.chatJid ||
+            obj.threadJid ||
+            '';
+          const threadId = Array.isArray(rawThreadVal)
+            ? parseLSInt64(rawThreadVal) || ''
+            : String(rawThreadVal).replace(/@(msgr|g\.us|c\.us)$/i, '');
           const senderName = String(obj.senderName || obj.authorName || obj.title || '');
+          const isSelf =
+            typeof obj.isAuthorMe === 'boolean' ? obj.isAuthorMe : undefined;
 
           const unsentTsParsed = Array.isArray(obj.unsentTimestampMs)
             ? parseLSInt64(obj.unsentTimestampMs)
@@ -2330,14 +2565,19 @@
             obj.is_unsent === true ||
             obj.unsent === true ||
             obj.isRevoked === true ||
-            obj.type === 'revoked' ||
-            obj.type === 'unsent' ||
+            /^(revoked|unsent)$/i.test(String(obj.type || obj.type_ || '')) ||
             (typeof obj.unsentTimestampMs === 'number' && obj.unsentTimestampMs > 0) ||
             (unsentTsParsed && unsentTsParsed !== '0') ||
             (typeof textContent === 'string' && isUnsendNoticeText(textContent));
 
           if (isUnsentFlag) {
-            triggerMessageUnsent(msgId, { senderId, threadId, senderName, source: context.source });
+            triggerMessageUnsent(msgId, {
+              senderId,
+              threadId,
+              senderName,
+              isSelf,
+              source: context.source
+            });
           } else {
             let cleanText =
               typeof textContent === 'string' &&
@@ -2346,10 +2586,11 @@
                 ? textContent.trim()
                 : '';
 
-            if (!cleanText && obj.hotEmojiSize !== undefined && obj.hotEmojiSize !== null) {
-              const hotSize = Array.isArray(obj.hotEmojiSize)
-                ? Number(parseLSInt64(obj.hotEmojiSize))
-                : Number(obj.hotEmojiSize);
+            const emojiSizeField = obj.hotEmojiSize ?? obj.specialTextSize;
+            if (!cleanText && emojiSizeField !== undefined && emojiSizeField !== null) {
+              const hotSize = Array.isArray(emojiSizeField)
+                ? Number(parseLSInt64(emojiSizeField))
+                : Number(emojiSizeField);
               if (hotSize >= 1 && hotSize <= 3) {
                 cleanText = '👍';
               }
@@ -2379,7 +2620,9 @@
             }
 
             if (cleanText || attachments.length > 0) {
-              if (!timestamp || isOldHistoricalTimestamp(timestamp)) return;
+              const isBridgeSource =
+                typeof context.source === 'string' && context.source.startsWith('MpsBridge:');
+              if (!timestamp || (!isBridgeSource && isOldHistoricalTimestamp(timestamp))) return;
               registerCapturedMessage({
                 messageId: msgId,
                 altIds,
@@ -2387,9 +2630,11 @@
                 senderId,
                 threadId,
                 senderName,
+                isSelf,
                 attachments,
                 timestamp,
-                source: context.source
+                source: context.source,
+                allowHistoricalCapture: isBridgeSource
               });
             }
           }
@@ -2531,6 +2776,9 @@
         }
       }
     } catch (_) {}
+    if (this.readyState === 2 || this.readyState === 3) {
+      return;
+    }
     return origWsSend.apply(this, arguments);
   };
 
@@ -2697,12 +2945,7 @@
     for (const c of directCandidates) {
       if (typeof c === 'string') {
         const clean = unvaultString(c).trim();
-        if (
-          clean.startsWith('mid.$') ||
-          clean.startsWith('wmid.') ||
-          clean.startsWith('otid.') ||
-          clean.startsWith('ee.mid.$')
-        ) {
+        if (isMessageIdString(clean)) {
           return clean.replace(/^ee\./, '');
         }
       }
@@ -2720,12 +2963,7 @@
       }
       if (typeof val === 'string') {
         const clean = unvaultString(val).trim();
-        if (
-          clean.startsWith('mid.$') ||
-          clean.startsWith('wmid.') ||
-          clean.startsWith('otid.') ||
-          clean.startsWith('ee.mid.$')
-        ) {
+        if (isMessageIdString(clean)) {
           return clean.replace(/^ee\./, '');
         }
       } else if (val && typeof val === 'object' && !(val instanceof Node)) {
@@ -2757,12 +2995,8 @@
       for (let step = 0; step < 16 && curr; step++) {
         if (typeof curr.key === 'string') {
           const cleanKey = unvaultString(curr.key).trim();
-          if (
-            cleanKey.startsWith('mid.$') ||
-            cleanKey.startsWith('wmid.') ||
-            cleanKey.startsWith('otid.')
-          ) {
-            return resolveCanonicalMessageId(cleanKey);
+          if (isMessageIdString(cleanKey)) {
+            return resolveCanonicalMessageId(cleanKey.replace(/^ee\./, ''));
           }
         }
         const fromProps = extractMsgIdFromProps(curr.memoizedProps);
