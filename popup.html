@@ -29,6 +29,7 @@
     <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/></symbol>
     <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M3.5 13.5h4.5l1.5 2.5h5l1.5-2.5h4.5"/><path d="M6.2 5h11.6l2.7 8.5V19a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1v-5.5z"/></symbol>
     <symbol id="i-bug" viewBox="0 0 24 24"><rect x="8" y="9" width="8" height="10" rx="4"/><path d="M10 9V7a2 2 0 1 1 4 0v2"/><path d="M12 13v6"/><path d="M4 13h4"/><path d="M16 13h4"/><path d="m5 8 3.2 2.2"/><path d="m19 8-3.2 2.2"/><path d="m5 19 3.2-2.2"/><path d="m19 19-3.2-2.2"/></symbol>
+    <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M5 20h14"/></symbol>
   </svg>
 
   <div class="app">
@@ -64,6 +65,25 @@
         </button>
       </div>
     </header>
+
+    <!-- ===== Thanh báo có phiên bản mới trên GitHub Releases ===== -->
+    <div id="update-banner" class="update-banner" role="region" aria-label="Thông báo cập nhật" hidden>
+      <div class="update-banner-icon" aria-hidden="true">
+        <svg class="icon"><use href="#i-sparkles"/></svg>
+      </div>
+      <div class="update-banner-body">
+        <div id="update-banner-title" class="update-banner-title">Đã có bản cập nhật mới</div>
+        <div class="update-banner-desc">Bản phát hành chính thức đã sẵn sàng trên GitHub</div>
+      </div>
+      <div class="update-banner-actions">
+        <a id="update-release-link" class="update-release-btn" href="https://github.com/binhake/fb-unsend-viewer/releases" target="_blank" rel="noopener noreferrer">
+          Mở trang tải
+        </a>
+        <button type="button" id="update-dismiss-btn" class="update-dismiss-btn" title="Ẩn thông báo bản này" aria-label="Đóng thông báo cập nhật">
+          <svg class="icon"><use href="#i-x"/></svg>
+        </button>
+      </div>
+    </div>
 
     <!-- ===== Tìm kiếm & bộ lọc ===== -->
     <section class="card controls">
@@ -120,7 +140,7 @@
       <span class="footer-meta">
         <a id="author-credit" class="author-credit" href="https://github.com/binhake/fb-unsend-viewer" target="_blank" rel="noopener noreferrer" title="Bản quyền thuộc về binhake — Nhấn để mở GitHub gốc">© binhake</a>
         <span class="footer-sep" aria-hidden="true">•</span>
-        <span id="version-tag" class="version-tag"></span>
+        <button type="button" id="version-tag" class="version-tag" title="Nhấn để kiểm tra bản cập nhật mới trên GitHub Releases"></button>
         <span class="footer-sep" aria-hidden="true">•</span>
         <button type="button" id="debug-btn" class="debug-link-btn" title="Tải tệp chẩn đoán lỗi (Debug JSON — hoặc nhấn Alt+Shift+D trên tab Facebook)" aria-label="Tải tệp Debug">
           <svg class="icon"><use href="#i-bug"/></svg>

@@ -11,6 +11,8 @@ const STORAGE_KEY_MESSAGES = 'fb_captured_messages_v2';
 const STORAGE_KEY_UNSENT = 'fb_unsent_messages_v2';
 const STORAGE_KEY_CLEANED_FLAG = 'fb_unsend_schema_v4_cleaned';
 const STORAGE_KEY_TOAST_ENABLED = 'fb_unsend_toast_enabled';
+const STORAGE_KEY_UPDATE_INFO = 'fb_unsend_update_info_v1';
+const GITHUB_RELEASES_PAGE_URL = 'https://github.com/binhake/fb-unsend-viewer/releases';
 const STATUS_HIDE_MS = 3600;
 const COPY_FEEDBACK_MS = 1200;
 const CARD_REMOVE_ANIM_MS = 180;
@@ -55,6 +57,11 @@ function cacheDom() {
   dom.footerInfo = document.getElementById('footer-info');
   dom.versionTag = document.getElementById('version-tag');
   dom.debugBtn = document.getElementById('debug-btn');
+
+  dom.updateBanner = document.getElementById('update-banner');
+  dom.updateBannerTitle = document.getElementById('update-banner-title');
+  dom.updateReleaseLink = document.getElementById('update-release-link');
+  dom.updateDismissBtn = document.getElementById('update-dismiss-btn');
 
   dom.statusToast = document.getElementById('status-toast');
   dom.statusIconUse = dom.statusToast.querySelector('.status-icon use');
@@ -975,6 +982,28 @@ function bindEvents() {
   if (dom.debugBtn) {
     dom.debugBtn.addEventListener('click', exportDebugReport);
   }
+  if (dom.versionTag) {
+    dom.versionTag.addEventListener('click', function () {
+      checkUpdateFromPopup(true);
+    });
+  }
+  if (dom.updateDismissBtn) {
+    dom.updateDismissBtn.addEventListener('click', function () {
+      const latestVer = dom.updateBanner?.dataset?.latestVersion || '';
+      dom.updateBanner.hidden = true;
+      if (latestVer && chrome?.storage?.local) {
+        chrome.storage.local.get([STORAGE_KEY_UPDATE_INFO], function (res) {
+          const prev = res?.[STORAGE_KEY_UPDATE_INFO] || {};
+          chrome.storage.local.set({
+            [STORAGE_KEY_UPDATE_INFO]: {
+              ...prev,
+              dismissedVersion: latestVer
+            }
+          });
+        });
+      }
+    });
+  }
 
   dom.importBtn.addEventListener('click', function () {
     dom.importFileInput.value = '';
@@ -1091,6 +1120,100 @@ function enforceAuthorAttribution() {
   }
 }
 
+function parseSemVer(verStr) {
+  const clean = String(verStr || '')
+    .trim()
+    .replace(/^[vV]+/, '')
+    .split('-')[0];
+  if (!/^\d+(\.\d+)*$/.test(clean)) return null;
+  return clean.split('.').map(n => parseInt(n, 10) || 0);
+}
+
+function isNewerVersion(remoteVer, localVer) {
+  const r = parseSemVer(remoteVer);
+  const l = parseSemVer(localVer);
+  if (!r || !l) return false;
+  const maxLen = Math.max(r.length, l.length);
+  for (let i = 0; i < maxLen; i++) {
+    const rv = r[i] || 0;
+    const lv = l[i] || 0;
+    if (rv > lv) return true;
+    if (rv < lv) return false;
+  }
+  return false;
+}
+
+function renderUpdateState(updateInfo) {
+  let currentVer = '1.2.5';
+  try {
+    currentVer = chrome.runtime.getManifest().version || currentVer;
+  } catch (_) {}
+
+  if (!dom.versionTag || !dom.updateBanner) return;
+
+  const latestVer = String(updateInfo?.latestVersion || '')
+    .trim()
+    .replace(/^[vV]+/, '');
+  const hasUpdate = Boolean(latestVer && isNewerVersion(latestVer, currentVer));
+  const isDismissed = Boolean(hasUpdate && updateInfo?.dismissedVersion === latestVer);
+
+  if (hasUpdate) {
+    dom.versionTag.textContent = `v${currentVer} → v${latestVer}`;
+    dom.versionTag.classList.add('has-update');
+    dom.versionTag.title = `Đã có bản phát hành mới v${latestVer} trên GitHub Releases (nhấn để mở)`;
+  } else {
+    dom.versionTag.textContent = `v${currentVer}`;
+    dom.versionTag.classList.remove('has-update');
+    dom.versionTag.title = 'Nhấn để kiểm tra bản cập nhật mới trên GitHub Releases';
+  }
+
+  if (hasUpdate && !isDismissed) {
+    dom.updateBannerTitle.textContent = `Đã có phiên bản mới v${latestVer}`;
+    dom.updateReleaseLink.href = updateInfo?.releaseUrl || GITHUB_RELEASES_PAGE_URL;
+    dom.updateBanner.dataset.latestVersion = latestVer;
+    dom.updateBanner.hidden = false;
+  } else {
+    dom.updateBanner.hidden = true;
+  }
+}
+
+function checkUpdateFromPopup(manual = false) {
+  if (!chrome?.runtime?.sendMessage) return;
+  if (manual) {
+    showStatus('Đang kiểm tra bản phát hành mới trên GitHub Releases…');
+  }
+  chrome.runtime.sendMessage({ type: 'CHECK_GITHUB_RELEASE_UPDATE', force: manual }, function (resp) {
+    const info = resp?.info;
+    renderUpdateState(info);
+    if (manual) {
+      let currentVer = '1.2.5';
+      try {
+        currentVer = chrome.runtime.getManifest().version || currentVer;
+      } catch (_) {}
+      const latestVer = String(info?.latestVersion || '')
+        .trim()
+        .replace(/^[vV]+/, '');
+      if (latestVer && isNewerVersion(latestVer, currentVer)) {
+        // Nếu người dùng tự bấm kiểm tra thì bỏ trạng thái ẩn của bản đó để hiện lại banner
+        chrome.storage.local.set(
+          {
+            [STORAGE_KEY_UPDATE_INFO]: {
+              ...info,
+              dismissedVersion: ''
+            }
+          },
+          function () {
+            renderUpdateState({ ...info, dismissedVersion: '' });
+            showStatus(`Phát hiện bản phát hành mới v${latestVer}!`);
+          }
+        );
+      } else {
+        showStatus(`Bạn đang dùng phiên bản mới nhất (v${currentVer})`);
+      }
+    }
+  });
+}
+
 function init() {
   cacheDom();
   try {
@@ -1099,6 +1222,13 @@ function init() {
   enforceAuthorAttribution();
   bindEvents();
   loadPopupData();
+
+  if (chrome?.storage?.local) {
+    chrome.storage.local.get([STORAGE_KEY_UPDATE_INFO], function (res) {
+      renderUpdateState(res?.[STORAGE_KEY_UPDATE_INFO]);
+      checkUpdateFromPopup(false);
+    });
+  }
 }
 
 init();
