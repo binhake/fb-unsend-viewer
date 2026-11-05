@@ -347,8 +347,166 @@
     return '';
   }
 
-  function backfillAvatarsInStoredLists() {
+  function repairPollutedIdsAndAvatarsInLists() {
     let changed = false;
+    const allRecords = [...unsentMessagesList, ...recentMessagesList].filter(
+      (r) => r && typeof r === 'object'
+    );
+    if (allRecords.length === 0) return false;
+
+    const corruptedRecordSet = new WeakSet();
+    const groupThreadIds = new Set();
+    const namesByThreadId = new Map();
+
+    // 1. Sửa các bản ghi có threadId là số byte <= 6 chữ số (lỗi gói Attachment cũ) hoặc senderId === threadId nhóm
+    for (const rec of allRecords) {
+      const sId = String(rec.senderId || '').trim().replace(/@(msgr|g\.us|c\.us)$/i, '');
+      const tId = String(rec.threadId || '').trim().replace(/@(msgr|g\.us|c\.us)$/i, '');
+      const pName = String(rec.personName || '').trim().toLowerCase();
+
+      if (tId && /^\d{1,6}$/.test(tId)) {
+        if (sId && sId.length >= 10) {
+          rec.threadId = sId;
+          rec.senderId = '';
+          groupThreadIds.add(sId);
+        } else {
+          rec.threadId = '';
+        }
+        corruptedRecordSet.add(rec);
+        changed = true;
+      } else if (
+        sId &&
+        sId === tId &&
+        sId.length >= 14 &&
+        !sId.startsWith('1000') &&
+        !sId.startsWith('615')
+      ) {
+        rec.senderId = '';
+        groupThreadIds.add(tId);
+        corruptedRecordSet.add(rec);
+        changed = true;
+      }
+
+      const finalTid = String(rec.threadId || '').trim();
+      if (finalTid && finalTid.length >= 10 && pName) {
+        if (!namesByThreadId.has(finalTid)) {
+          namesByThreadId.set(finalTid, new Set());
+        }
+        namesByThreadId.get(finalTid).add(pName);
+      }
+    }
+
+    for (const [tId, names] of namesByThreadId.entries()) {
+      if (names.size > 1 || (tId.length >= 14 && !tId.startsWith('1000') && !tId.startsWith('615'))) {
+        groupThreadIds.add(tId);
+      }
+    }
+
+    // 2. Xóa senderId nếu nó thực chất là mã nhóm (groupThreadId)
+    for (const rec of allRecords) {
+      const sId = String(rec.senderId || '').trim();
+      if (sId && groupThreadIds.has(sId)) {
+        if (!rec.threadId) {
+          rec.threadId = sId;
+        }
+        rec.senderId = '';
+        corruptedRecordSet.add(rec);
+        changed = true;
+      }
+    }
+
+    // 3. Nếu một senderId vẫn bị gắn cho nhiều personName khác nhau, chỉ giữ cho personName xuất hiện nhiều nhất
+    const senderIdNameCounts = new Map();
+    for (const rec of allRecords) {
+      const sId = String(rec.senderId || '').trim();
+      const pName = String(rec.personName || '').trim().toLowerCase();
+      if (!sId || !pName) continue;
+      if (!senderIdNameCounts.has(sId)) {
+        senderIdNameCounts.set(sId, new Map());
+      }
+      const counts = senderIdNameCounts.get(sId);
+      counts.set(pName, (counts.get(pName) || 0) + 1);
+    }
+
+    const validOwnerBySenderId = new Map();
+    for (const [sId, counts] of senderIdNameCounts.entries()) {
+      let bestName = '';
+      let bestCount = 0;
+      let tied = false;
+      for (const [name, cnt] of counts.entries()) {
+        if (cnt > bestCount) {
+          bestCount = cnt;
+          bestName = name;
+          tied = false;
+        } else if (cnt === bestCount) {
+          tied = true;
+        }
+      }
+      if (bestName && !tied) {
+        validOwnerBySenderId.set(sId, bestName);
+      }
+    }
+
+    for (const rec of allRecords) {
+      const sId = String(rec.senderId || '').trim();
+      const pName = String(rec.personName || '').trim().toLowerCase();
+      if (!sId || !pName) continue;
+      const owner = validOwnerBySenderId.get(sId);
+      if (!owner || owner !== pName) {
+        rec.senderId = '';
+        corruptedRecordSet.add(rec);
+        changed = true;
+      }
+    }
+
+    // 4. Làm sạch avatarUrl bị gán chéo giữa nhiều người khác tên (ví dụ avatar Nguyễn Minh Huy bị gán cho Duyên, Kiên, Vy, Bình)
+    const avatarNameCounts = new Map();
+    for (const rec of allRecords) {
+      const av = String(rec.avatarUrl || '').trim();
+      const pName = String(rec.personName || '').trim().toLowerCase();
+      if (!av || !pName) continue;
+      if (!avatarNameCounts.has(av)) {
+        avatarNameCounts.set(av, new Map());
+      }
+      const counts = avatarNameCounts.get(av);
+      const weight = corruptedRecordSet.has(rec) ? 1 : 10;
+      counts.set(pName, (counts.get(pName) || 0) + weight);
+    }
+
+    const avatarTrueOwner = new Map();
+    for (const [av, counts] of avatarNameCounts.entries()) {
+      if (counts.size <= 1) continue;
+      let bestName = '';
+      let bestScore = 0;
+      for (const [name, score] of counts.entries()) {
+        if (score > bestScore) {
+          bestScore = score;
+          bestName = name;
+        }
+      }
+      if (bestName) {
+        avatarTrueOwner.set(av, bestName);
+      }
+    }
+
+    for (const rec of allRecords) {
+      const av = String(rec.avatarUrl || '').trim();
+      const pName = String(rec.personName || '').trim().toLowerCase();
+      if (!av) continue;
+      if (
+        corruptedRecordSet.has(rec) ||
+        (avatarTrueOwner.has(av) && avatarTrueOwner.get(av) !== pName)
+      ) {
+        rec.avatarUrl = '';
+        changed = true;
+      }
+    }
+
+    return changed;
+  }
+
+  function backfillAvatarsInStoredLists() {
+    let changed = repairPollutedIdsAndAvatarsInLists();
     const knownSenderIdByScopedKey = new Map(personIdByThreadAndNameMap);
 
     const extractAndIndexIds = (item) => {
@@ -370,6 +528,12 @@
         if (key) {
           knownSenderIdByScopedKey.set(key, String(item.senderId));
           personIdByThreadAndNameMap.set(key, String(item.senderId));
+        }
+        if (item.avatarUrl && /^https?:\/\//i.test(item.avatarUrl)) {
+          personAvatarByIdMap.set(String(item.senderId), item.avatarUrl.trim());
+          if (key) {
+            personAvatarByThreadAndNameMap.set(key, item.avatarUrl.trim());
+          }
         }
       }
     };
@@ -819,6 +983,9 @@
                   messagesById.set(msg.messageId, msg);
                 }
               }
+            }
+            if (repairPollutedIdsAndAvatarsInLists()) {
+              needsResave = true;
             }
             dlog('STORAGE-LOADED', '#00cec9', {
               capturedCount: recentMessagesList.length,
@@ -3022,17 +3189,27 @@
           }
         }
 
+        const existingById = messagesById.get(msgId);
         const personName = analysis.isSelf
           ? currentUserFullName || 'Bạn'
           : chooseBestPersonName(
               analysis.rowSenderName,
+              existingById?.personName,
               safePrev?.personName,
               rowEl.dataset?.fbUnsendSavedSender,
               inheritedOtherSender
             );
 
         const e2eePeerIds = extractPeerIdFromE2EEMsgId(msgId, analysis.isSelf);
-        if (personName && !analysis.isSelf && !isGenericSenderName(personName)) {
+        const hasAuthoritativeRowPerson = Boolean(
+          analysis.rowSenderName || existingById?.personName || e2eePeerIds.senderId
+        );
+        if (
+          hasAuthoritativeRowPerson &&
+          personName &&
+          !analysis.isSelf &&
+          !isGenericSenderName(personName)
+        ) {
           if (
             recordDomAvatarForThreadAndPerson(
               threadName,
@@ -3063,7 +3240,6 @@
           analysis.attachments.length > 0 ? analysis.attachments : safePrev?.attachments || []
         );
 
-        const existingById = messagesById.get(msgId);
         const resolvedSenderId =
           existingById?.senderId || safePrev?.senderId || e2eePeerIds.senderId || '';
         const resolvedThreadId =

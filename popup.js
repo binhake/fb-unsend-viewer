@@ -528,13 +528,180 @@ function extractSenderIdFromRecord(rec, isSelf = false) {
   return '';
 }
 
+function repairPopupListsIdsAndAvatars(unsentList, capturedList) {
+  let unsentChanged = false;
+  let capturedChanged = false;
+  const entries = [
+    ...unsentList.map(rec => ({ rec, isUnsent: true })),
+    ...capturedList.map(rec => ({ rec, isUnsent: false }))
+  ].filter(e => e.rec && typeof e.rec === 'object');
+  if (entries.length === 0) return { unsentChanged: false, capturedChanged: false };
+
+  const markChanged = entry => {
+    if (entry.isUnsent) unsentChanged = true;
+    else capturedChanged = true;
+  };
+
+  const corruptedSet = new WeakSet();
+  const groupThreadIds = new Set();
+  const namesByThreadId = new Map();
+
+  for (const entry of entries) {
+    const { rec } = entry;
+    const sId = String(rec.senderId || '').trim().replace(/@(msgr|g\.us|c\.us)$/i, '');
+    const tId = String(rec.threadId || '').trim().replace(/@(msgr|g\.us|c\.us)$/i, '');
+    const { person } = parseRecordNames(rec);
+    const pName = (person || '').trim().toLowerCase();
+
+    if (tId && /^\d{1,6}$/.test(tId)) {
+      if (sId && sId.length >= 10) {
+        rec.threadId = sId;
+        rec.senderId = '';
+        groupThreadIds.add(sId);
+      } else {
+        rec.threadId = '';
+      }
+      corruptedSet.add(rec);
+      markChanged(entry);
+    } else if (
+      sId &&
+      sId === tId &&
+      sId.length >= 14 &&
+      !sId.startsWith('1000') &&
+      !sId.startsWith('615')
+    ) {
+      rec.senderId = '';
+      groupThreadIds.add(tId);
+      corruptedSet.add(rec);
+      markChanged(entry);
+    }
+
+    const finalTid = String(rec.threadId || '').trim();
+    if (finalTid && finalTid.length >= 10 && pName) {
+      if (!namesByThreadId.has(finalTid)) {
+        namesByThreadId.set(finalTid, new Set());
+      }
+      namesByThreadId.get(finalTid).add(pName);
+    }
+  }
+
+  for (const [tId, names] of namesByThreadId.entries()) {
+    if (names.size > 1 || (tId.length >= 14 && !tId.startsWith('1000') && !tId.startsWith('615'))) {
+      groupThreadIds.add(tId);
+    }
+  }
+
+  for (const entry of entries) {
+    const { rec } = entry;
+    const sId = String(rec.senderId || '').trim();
+    if (sId && groupThreadIds.has(sId)) {
+      if (!rec.threadId) {
+        rec.threadId = sId;
+      }
+      rec.senderId = '';
+      corruptedSet.add(rec);
+      markChanged(entry);
+    }
+  }
+
+  const senderIdNameCounts = new Map();
+  for (const { rec } of entries) {
+    const sId = String(rec.senderId || '').trim();
+    const { person } = parseRecordNames(rec);
+    const pName = (person || '').trim().toLowerCase();
+    if (!sId || !pName) continue;
+    if (!senderIdNameCounts.has(sId)) {
+      senderIdNameCounts.set(sId, new Map());
+    }
+    const counts = senderIdNameCounts.get(sId);
+    counts.set(pName, (counts.get(pName) || 0) + 1);
+  }
+
+  const validOwnerBySenderId = new Map();
+  for (const [sId, counts] of senderIdNameCounts.entries()) {
+    let bestName = '';
+    let bestCount = 0;
+    let tied = false;
+    for (const [name, cnt] of counts.entries()) {
+      if (cnt > bestCount) {
+        bestCount = cnt;
+        bestName = name;
+        tied = false;
+      } else if (cnt === bestCount) {
+        tied = true;
+      }
+    }
+    if (bestName && !tied) {
+      validOwnerBySenderId.set(sId, bestName);
+    }
+  }
+
+  for (const entry of entries) {
+    const { rec } = entry;
+    const sId = String(rec.senderId || '').trim();
+    const { person } = parseRecordNames(rec);
+    const pName = (person || '').trim().toLowerCase();
+    if (!sId || !pName) continue;
+    const owner = validOwnerBySenderId.get(sId);
+    if (!owner || owner !== pName) {
+      rec.senderId = '';
+      corruptedSet.add(rec);
+      markChanged(entry);
+    }
+  }
+
+  const avatarNameCounts = new Map();
+  for (const { rec } of entries) {
+    const av = String(rec.avatarUrl || '').trim();
+    const { person } = parseRecordNames(rec);
+    const pName = (person || '').trim().toLowerCase();
+    if (!av || !pName) continue;
+    if (!avatarNameCounts.has(av)) {
+      avatarNameCounts.set(av, new Map());
+    }
+    const counts = avatarNameCounts.get(av);
+    const weight = corruptedSet.has(rec) ? 1 : 10;
+    counts.set(pName, (counts.get(pName) || 0) + weight);
+  }
+
+  const avatarTrueOwner = new Map();
+  for (const [av, counts] of avatarNameCounts.entries()) {
+    if (counts.size <= 1) continue;
+    let bestName = '';
+    let bestScore = 0;
+    for (const [name, score] of counts.entries()) {
+      if (score > bestScore) {
+        bestScore = score;
+        bestName = name;
+      }
+    }
+    if (bestName) {
+      avatarTrueOwner.set(av, bestName);
+    }
+  }
+
+  for (const entry of entries) {
+    const { rec } = entry;
+    const av = String(rec.avatarUrl || '').trim();
+    const { person } = parseRecordNames(rec);
+    const pName = (person || '').trim().toLowerCase();
+    if (!av) continue;
+    if (corruptedSet.has(rec) || (avatarTrueOwner.has(av) && avatarTrueOwner.get(av) !== pName)) {
+      rec.avatarUrl = '';
+      markChanged(entry);
+    }
+  }
+
+  return { unsentChanged, capturedChanged };
+}
+
 function findBestAvatarForItem(item, person, thread, isSelf) {
   const cleanPerson = (person || '').trim().toLowerCase();
   const cleanThread = (thread || person || '').trim().toLowerCase();
   const senderId = extractSenderIdFromRecord(item, isSelf);
   const pools = [appState.unsentMessages, appState.capturedMessages];
 
-  // 1. Ưu tiên tuyệt đối: khớp theo UID (senderId)
+  // 1. Ưu tiên tuyệt đối: khớp theo UID (senderId) VÀ cùng tên người gửi
   if (senderId) {
     for (const list of pools) {
       if (!Array.isArray(list)) continue;
@@ -542,7 +709,8 @@ function findBestAvatarForItem(item, person, thread, isSelf) {
         if (!cand || !cand.avatarUrl || !/^https?:\/\//i.test(cand.avatarUrl)) continue;
         const candNames = parseRecordNames(cand);
         const candId = extractSenderIdFromRecord(cand, candNames.isSelf);
-        if (candId && candId === senderId) {
+        const candPerson = (candNames.person || '').trim().toLowerCase();
+        if (candId && candId === senderId && (!cleanPerson || !candPerson || candPerson === cleanPerson)) {
           return cand.avatarUrl.trim();
         }
       }
@@ -756,6 +924,10 @@ function loadPopupData() {
       if (cleaned.changed) capturedChanged = true;
       return cleaned.item;
     });
+
+    const repaired = repairPopupListsIdsAndAvatars(appState.unsentMessages, appState.capturedMessages);
+    if (repaired.unsentChanged) unsentChanged = true;
+    if (repaired.capturedChanged) capturedChanged = true;
 
     if (unsentChanged || capturedChanged) {
       const patch = {};

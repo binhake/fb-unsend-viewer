@@ -955,10 +955,10 @@
     const noticeSenderName = extractNameFromNoticeText(extraInfo.unsendNotice || '');
 
     const finalSenderId = String(
-      extraInfo.senderId || existing?.senderId || (extraInfo.isSelf === false ? e2eeIds.peerUserId : '') || ''
+      existing?.senderId || extraInfo.senderId || (extraInfo.isSelf === false ? e2eeIds.peerUserId : '') || ''
     ).replace(/@(msgr|g\.us|c\.us)$/i, '');
     const finalThreadId = String(
-      extraInfo.threadId || existing?.threadId || e2eeIds.threadId || ''
+      existing?.threadId || extraInfo.threadId || e2eeIds.threadId || ''
     ).replace(/@(msgr|g\.us|c\.us)$/i, '');
     const resolvedNames = resolveContactAndThreadName(
       finalSenderId,
@@ -1235,7 +1235,7 @@
               const numVal = Number(strVal);
               if (numVal > 1577836800000 && numVal < 2051222400000) {
                 validTimestamps.push(numVal);
-              } else if (strVal.length >= 6 && strVal !== '0') {
+              } else if (strVal.length >= 7 && strVal !== '0') {
                 validIds.push(strVal);
               }
             }
@@ -1246,7 +1246,8 @@
         const explicitThreadId = parseLSInt64(args[3]);
         const explicitSenderId = parseLSInt64(args[10]);
         const threadId = explicitThreadId || validIds[0] || '';
-        const senderId = explicitSenderId || validIds[1] || validIds[0] || '';
+        const senderId =
+          explicitSenderId || (validIds[1] && validIds[1] !== threadId ? validIds[1] : '') || '';
 
         const resolvedId = resolveCanonicalMessageId(msgId);
         if (otid && otid !== resolvedId) {
@@ -1351,7 +1352,7 @@
             texts.push('👍');
           } else if (num > 1577836800000 && num < 2051222400000) {
             timestamps.push(num);
-          } else if (i64Str.length >= 6 && i64Str !== '0') {
+          } else if (i64Str.length >= 7 && i64Str !== '0') {
             candidateIds.push(i64Str);
           }
         } else if (Array.isArray(arg)) {
@@ -1387,8 +1388,14 @@
       const savedMeta = messageMetaMap.get(resolvedId);
       const rawBestTimestamp = timestamps.length > 0 ? Math.min(...timestamps) : null;
       const bestTimestamp = rawBestTimestamp || savedMeta?.timestamp || null;
+      const isAttachmentMod = /Attachment/i.test(moduleName);
       const fallbackThreadId = savedMeta?.threadId || candidateIds[0] || '';
-      const fallbackSenderId = savedMeta?.senderId || candidateIds[1] || candidateIds[0] || '';
+      const fallbackSenderId =
+        savedMeta?.senderId ||
+        (!isAttachmentMod && candidateIds[1] && candidateIds[1] !== fallbackThreadId
+          ? candidateIds[1]
+          : '') ||
+        '';
 
       const isUnsendProcedure =
         /^(LSMarkMessageUnsent|LSHandleUnsendMessage|LSDeleteMessage|LSDeleteMessageRequest|LSUpdateUnsentMessage.*|LSRetractMessage|LSRecallMessage|MAW.*Unsend.*|MAW.*Delete.*Message.*)(\.|$)/i.test(
@@ -2478,13 +2485,14 @@
           const num = Number(val);
           if (num > 1577836800000 && num < 2051222400000) {
             if (!timestamp || num < timestamp) timestamp = num;
-          } else if (val.length >= 5 && val !== '0') {
+          } else if (val.length >= 7 && val !== '0') {
             ids.push(val);
           }
         }
 
+        const isAttachmentFunc = /Attachment/i.test(currentFunc);
         const threadId = ids[0] || '';
-        const senderId = ids[1] || ids[0] || '';
+        const senderId = !isAttachmentFunc && ids[1] && ids[1] !== threadId ? ids[1] : '';
 
         const isExplicitUnsendFunc =
           /^(markMessageUnsent|handleUnsendMessage|deleteMessage|retractMessage|recallMessage)$/i.test(
