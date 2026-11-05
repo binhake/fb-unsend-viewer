@@ -94,6 +94,8 @@
     return !id || typeof id !== 'string' || id.startsWith('dom_') || id.startsWith('unsend_');
   }
 
+  const e2eeRevokeAliasMap = new Map();
+
   function isAuthoritativeMessageId(id) {
     if (!id || typeof id !== 'string') return false;
     const clean = id.trim();
@@ -103,6 +105,91 @@
       clean.startsWith('otid.') ||
       /^\d+@(msgr|g\.us)\.\d+$/.test(clean)
     );
+  }
+
+  function extractE2EEParts(msgId) {
+    if (!msgId || typeof msgId !== 'string') return null;
+    const m = msgId.trim().match(/^((\d+)@(msgr|g\.us))\.(\d+)$/);
+    if (!m) return null;
+    return {
+      threadPrefix: m[1],
+      threadId: m[2],
+      domain: m[3],
+      stanzaId: m[4]
+    };
+  }
+
+  function resolveContentCanonicalId(id) {
+    if (!id || typeof id !== 'string') return '';
+    let cur = id.trim().replace(/^ee\./, '');
+    let depth = 0;
+    while (e2eeRevokeAliasMap.has(cur) && depth < 5) {
+      const next = e2eeRevokeAliasMap.get(cur);
+      if (!next || next === cur) break;
+      cur = next;
+      depth++;
+    }
+    const parts = extractE2EEParts(cur);
+    if (parts && e2eeRevokeAliasMap.has(parts.stanzaId)) {
+      const mapped = e2eeRevokeAliasMap.get(parts.stanzaId);
+      if (mapped) return mapped;
+    }
+    return cur;
+  }
+
+  function extractBareStanzaId(id) {
+    if (!id || typeof id !== 'string') return '';
+    const trimmed = id.trim();
+    if (/^\d{15,22}$/.test(trimmed)) return trimmed;
+    const parts = extractE2EEParts(trimmed);
+    return parts ? parts.stanzaId : '';
+  }
+
+  function isSameAuthoritativeRecordId(fiberId, rec) {
+    if (!fiberId || !rec) return false;
+    const canonFiber = resolveContentCanonicalId(fiberId);
+    const fiberStanza = extractBareStanzaId(canonFiber);
+    const candidateIds = [
+      rec.messageId,
+      rec.originalMessageId,
+      rec.revokeMessageId,
+      rec.fiberMsgId
+    ].filter(Boolean);
+    for (const cid of candidateIds) {
+      const canonCid = resolveContentCanonicalId(cid);
+      if (canonCid === canonFiber) return true;
+      if (fiberStanza && extractBareStanzaId(canonCid) === fiberStanza) return true;
+    }
+    return false;
+  }
+
+  function areAuthoritativeIdsCompatible(idA, idB, allowSameE2EEThreadFallback = false) {
+    const canonA = resolveContentCanonicalId(idA);
+    const canonB = resolveContentCanonicalId(idB);
+    if (!canonA || !canonB) return true;
+    const stanzaA = extractBareStanzaId(canonA);
+    const stanzaB = extractBareStanzaId(canonB);
+    if (stanzaA && stanzaB && stanzaA === stanzaB) return true;
+    if (!isAuthoritativeMessageId(canonA) || !isAuthoritativeMessageId(canonB)) return true;
+    if (canonA === canonB) return true;
+
+    const partsA = extractE2EEParts(canonA);
+    const partsB = extractE2EEParts(canonB);
+    if (
+      allowSameE2EEThreadFallback &&
+      partsA &&
+      partsB &&
+      partsA.threadPrefix === partsB.threadPrefix
+    ) {
+      const aHasOtherAlias =
+        e2eeRevokeAliasMap.has(idA) && e2eeRevokeAliasMap.get(idA) !== canonB;
+      const bHasOtherAlias =
+        e2eeRevokeAliasMap.has(idB) && e2eeRevokeAliasMap.get(idB) !== canonA;
+      if (!aHasOtherAlias && !bHasOtherAlias) {
+        return true;
+      }
+    }
+    return false;
   }
 
   function extractPeerIdFromE2EEMsgId(msgId, isSelf = false) {
@@ -398,10 +485,20 @@
     return false;
   }
 
+  function isRawVaultTokenString(text) {
+    if (!text || typeof text !== 'string') return false;
+    const trimmed = text.trim();
+    return (
+      trimmed.startsWith('@@vault') ||
+      trimmed.startsWith('vault:') ||
+      /^\d+##\d+[\s\S]*\d+##\d+$/.test(trimmed)
+    );
+  }
+
   function normalizeUnsupportedAttachmentText(text) {
     if (!text || typeof text !== 'string') return '';
     const trimmed = text.trim();
-    if (!trimmed) return '';
+    if (!trimmed || isRawVaultTokenString(trimmed)) return '';
     if (
       /^(Video).*(chỉ có thể xem được (1|một) lần|only be viewed once)/i.test(trimmed)
     ) {
@@ -509,19 +606,35 @@
 
             let needsResave = false;
             if (Array.isArray(res[STORAGE_KEY_MESSAGES])) {
-              recentMessagesList = res[STORAGE_KEY_MESSAGES].map((msg) => {
-                const cleaned = sanitizeStoredRecord(msg);
-                if (
-                  cleaned.text !== msg.text ||
-                  cleaned.threadName !== msg.threadName ||
-                  cleaned.senderName !== msg.senderName ||
-                  msg.rowEl ||
-                  msg.chatContainer
-                ) {
-                  needsResave = true;
-                }
-                return cleaned;
-              });
+              recentMessagesList = res[STORAGE_KEY_MESSAGES]
+                .map((msg) => {
+                  const cleaned = sanitizeStoredRecord(msg);
+                  if (
+                    cleaned.text !== msg.text ||
+                    cleaned.threadName !== msg.threadName ||
+                    cleaned.senderName !== msg.senderName ||
+                    msg.rowEl ||
+                    msg.chatContainer
+                  ) {
+                    needsResave = true;
+                  }
+                  return cleaned;
+                })
+                .filter((msg) => {
+                  if (!msg || (!msg.text && (!msg.attachments || msg.attachments.length === 0))) {
+                    needsResave = true;
+                    return false;
+                  }
+                  if (
+                    isTempDomId(msg.messageId) &&
+                    msg.text === '👍' &&
+                    (!msg.attachments || msg.attachments.length === 0)
+                  ) {
+                    needsResave = true;
+                    return false;
+                  }
+                  return true;
+                });
               for (const msg of recentMessagesList) {
                 if (msg.messageId) {
                   messagesById.set(msg.messageId, msg);
@@ -827,21 +940,23 @@
   function getRowMessageId(rowEl) {
     if (!rowEl || !(rowEl instanceof HTMLElement)) return '';
     let raw =
+      rowEl.dataset?.fbMsgId ||
+      rowEl.getAttribute('data-fb-msg-id') ||
       rowEl.dataset?.messageId ||
       rowEl.getAttribute('data-message-id') ||
-      rowEl.dataset?.fbMsgId ||
       '';
     if (!raw) {
-      const childWithId = rowEl.querySelector('[data-message-id], [data-fb-msg-id]');
+      const childWithId = rowEl.querySelector('[data-fb-msg-id], [data-message-id]');
       if (childWithId instanceof HTMLElement) {
         raw =
+          childWithId.dataset?.fbMsgId ||
+          childWithId.getAttribute('data-fb-msg-id') ||
           childWithId.dataset?.messageId ||
           childWithId.getAttribute('data-message-id') ||
-          childWithId.dataset?.fbMsgId ||
           '';
       }
     }
-    return String(raw).trim().replace(/^ee\./, '');
+    return resolveContentCanonicalId(raw);
   }
 
   function chooseBestPersonName(...candidates) {
@@ -953,9 +1068,25 @@
       currentUserFullName = msg.personName.trim();
     }
 
+    const canonicalMsgId = resolveContentCanonicalId(msg.messageId);
+    if (canonicalMsgId) {
+      msg.messageId = canonicalMsgId;
+    }
+    const msgStanzaId = extractBareStanzaId(msg.messageId);
     const msgIsSelf = inferRecordIsSelf(msg);
-    let existing = messagesById.get(msg.messageId);
+    let existing =
+      messagesById.get(msg.messageId) ||
+      (msgStanzaId && msgStanzaId !== msg.messageId ? messagesById.get(msgStanzaId) : null);
     let duplicateIdx = -1;
+
+    if (!existing && msgStanzaId) {
+      duplicateIdx = recentMessagesList.findIndex(
+        (m) => m && extractBareStanzaId(m.messageId) === msgStanzaId
+      );
+      if (duplicateIdx !== -1) {
+        existing = recentMessagesList[duplicateIdx];
+      }
+    }
 
     if (!existing && (msg.text || (msg.attachments && msg.attachments.length > 0))) {
       const cleanText = (msg.text || '').trim();
@@ -975,11 +1106,18 @@
       }
     }
 
-    const bestId = !isTempDomId(msg.messageId)
-      ? msg.messageId
-      : existing && !isTempDomId(existing.messageId)
-        ? existing.messageId
-        : msg.messageId;
+    const bestId =
+      !isTempDomId(msg.messageId) &&
+      (!existing ||
+        isTempDomId(existing.messageId) ||
+        (/^\d{15,22}$/.test(existing.messageId) && /@(msgr|g\.us)\./.test(msg.messageId)))
+        ? msg.messageId
+        : existing && !isTempDomId(existing.messageId)
+          ? existing.messageId
+          : msg.messageId;
+    if (msgStanzaId && msgStanzaId !== bestId && /@(msgr|g\.us)\./.test(bestId)) {
+      e2eeRevokeAliasMap.set(msgStanzaId, bestId);
+    }
 
     const contextRow = msg.rowEl || existing?.rowEl || null;
     const activeThread = contextRow ? findActiveThreadName(contextRow) : '';
@@ -1103,8 +1241,13 @@
 
     const existingIdx = unsentMessagesList.findIndex((u) => {
       if (!u) return false;
-      if (u.messageId === newRecord.messageId) return true;
-      if (newRecord.originalMessageId && u.messageId === newRecord.originalMessageId) return true;
+      if (isSameAuthoritativeRecordId(newRecord.messageId, u)) return true;
+      if (newRecord.originalMessageId && isSameAuthoritativeRecordId(newRecord.originalMessageId, u)) {
+        return true;
+      }
+      if (newRecord.revokeMessageId && isSameAuthoritativeRecordId(newRecord.revokeMessageId, u)) {
+        return true;
+      }
 
       const hasTempId = isTempDomId(u.messageId) || isTempDomId(newRecord.messageId);
       if (!hasTempId) return false;
@@ -1290,14 +1433,30 @@
       currentUserFullName = unsentData.personName.trim();
     }
 
+    const canonUnsentId = resolveContentCanonicalId(unsentData.messageId);
+    if (canonUnsentId) {
+      unsentData.messageId = canonUnsentId;
+    }
+    const unsentStanzaId = extractBareStanzaId(unsentData.messageId);
+
     let existing =
       messagesById.get(unsentData.messageId) ||
-      (unsentData.rawMessageId ? messagesById.get(unsentData.rawMessageId) : null);
+      (unsentData.rawMessageId ? messagesById.get(resolveContentCanonicalId(unsentData.rawMessageId)) : null) ||
+      (unsentData.rawMessageId ? messagesById.get(unsentData.rawMessageId) : null) ||
+      (unsentStanzaId ? messagesById.get(unsentStanzaId) : null);
+
+    if (!existing && unsentStanzaId) {
+      existing =
+        recentMessagesList.find((m) => m && extractBareStanzaId(m.messageId) === unsentStanzaId) ||
+        null;
+    }
 
     if (!existing && unsentData.messageId) {
       existing =
         recentlyDisappearedMessages.find(
-          (d) => d.messageId === unsentData.messageId || d.fiberMsgId === unsentData.messageId
+          (d) =>
+            isSameAuthoritativeRecordId(unsentData.messageId, d) ||
+            (unsentData.rawMessageId && isSameAuthoritativeRecordId(unsentData.rawMessageId, d))
         ) || null;
     }
 
@@ -1384,22 +1543,57 @@
   }
 
   function handleE2EERevokeResolved(payload) {
-    if (!payload || !payload.revokedMsgId) return;
+    if (!payload) return;
+    const revokedMsgId = payload.revokedMsgId || payload.revokeMsgId || '';
+    if (!revokedMsgId) return;
     const {
-      revokedMsgId,
       originalMsgId,
+      originalStanzaId,
       timestampMs,
       senderId,
       threadId,
       isSelf
     } = payload;
 
+    if (originalMsgId && originalMsgId !== revokedMsgId) {
+      e2eeRevokeAliasMap.set(revokedMsgId, originalMsgId);
+      const revStanza = extractBareStanzaId(revokedMsgId);
+      if (revStanza) {
+        e2eeRevokeAliasMap.set(revStanza, originalMsgId);
+      }
+    }
+    if (originalStanzaId && originalMsgId) {
+      e2eeRevokeAliasMap.set(originalStanzaId, originalMsgId);
+    }
+
+    if (document.body && originalMsgId) {
+      document
+        .querySelectorAll('div[data-scope="messages_table"]')
+        .forEach((rowEl) => {
+          const domMid = rowEl.dataset?.messageId || rowEl.getAttribute('data-message-id') || '';
+          const fbMid = rowEl.dataset?.fbMsgId || '';
+          if (domMid === revokedMsgId || fbMid === revokedMsgId) {
+            rowEl.dataset.fbMsgId = originalMsgId;
+          }
+        });
+    }
+
     let matchedRecord = null;
     if (originalMsgId && messagesById.has(originalMsgId)) {
       matchedRecord = messagesById.get(originalMsgId);
     }
+    if (!matchedRecord && originalStanzaId && messagesById.has(originalStanzaId)) {
+      matchedRecord = messagesById.get(originalStanzaId);
+    }
+    if (!matchedRecord && (originalMsgId || originalStanzaId)) {
+      const targetId = originalMsgId || originalStanzaId;
+      matchedRecord =
+        recentMessagesList.find((r) => isSameAuthoritativeRecordId(targetId, r)) ||
+        recentlyDisappearedMessages.find((d) => isSameAuthoritativeRecordId(targetId, d)) ||
+        null;
+    }
 
-    if (!matchedRecord && typeof timestampMs === 'number' && timestampMs > 0) {
+    if (!matchedRecord && !originalMsgId && typeof timestampMs === 'number' && timestampMs > 0) {
       let bestTimeDiff = 2800;
       for (const rec of recentMessagesList) {
         if (!rec || (!rec.text && (!rec.attachments || rec.attachments.length === 0))) continue;
@@ -1421,28 +1615,33 @@
         matchedId: matchedRecord.messageId,
         text: matchedRecord.text
       });
+      const canonicalId = originalMsgId || matchedRecord.messageId || revokedMsgId;
       const aliased = {
         ...matchedRecord,
-        messageId: revokedMsgId,
+        messageId: canonicalId,
         originalMessageId: originalMsgId || matchedRecord.messageId,
+        revokeMessageId: revokedMsgId,
         senderId: senderId || matchedRecord.senderId || '',
         threadId: threadId || matchedRecord.threadId || '',
-        timestamp: timestampMs || matchedRecord.timestamp || getMonotonicTimestamp()
+        timestamp: matchedRecord.timestamp || timestampMs || getMonotonicTimestamp()
       };
       messagesById.set(revokedMsgId, aliased);
+      messagesById.set(canonicalId, aliased);
       handleUnsentEvent({
-        messageId: revokedMsgId,
-        rawMessageId: originalMsgId || matchedRecord.messageId,
+        messageId: canonicalId,
+        rawMessageId: revokedMsgId,
         text: matchedRecord.text || '',
         attachments: matchedRecord.attachments || [],
         senderId: aliased.senderId,
         threadId: aliased.threadId,
-        personName: matchedRecord.personName || '',
-        threadName: matchedRecord.threadName || '',
-        senderName: matchedRecord.senderName || '',
+        personName: payload.personName || matchedRecord.personName || '',
+        threadName: payload.threadName || matchedRecord.threadName || '',
+        senderName: payload.senderName || matchedRecord.senderName || '',
         isSelf: typeof isSelf === 'boolean' ? isSelf : matchedRecord.isSelf,
         timestamp: aliased.timestamp
       });
+    } else {
+      scheduleDomScan();
     }
   }
 
@@ -2020,21 +2219,15 @@
         ) {
           continue;
         }
+        if (svgEl.querySelector('image')) {
+          continue;
+        }
         const ariaLabel = (
           svgEl.getAttribute('aria-label') ||
           svgEl.parentElement?.getAttribute('aria-label') ||
           ''
         ).trim();
-        if (/(giơ ngón tay cái|ngón tay cái|thumbs up)/i.test(ariaLabel)) {
-          texts.push('👍');
-          break;
-        }
-        const rect = svgEl.getBoundingClientRect();
-        const attrW = parseFloat(svgEl.getAttribute('width') || '0') || 0;
-        const attrH = parseFloat(svgEl.getAttribute('height') || '0') || 0;
-        const w = Math.max(rect.width, attrW);
-        const h = Math.max(rect.height, attrH);
-        if (w >= 26 && h >= 26 && w <= 160 && h <= 160) {
+        if (/(giơ ngón tay cái|ngón tay cái|thumbs up|^like$)/i.test(ariaLabel)) {
           texts.push('👍');
           break;
         }
@@ -2317,8 +2510,8 @@
       for (const item of containerRows) {
         const fiberId = getRowMessageId(item.rowEl);
         if (fiberId) {
-          const exactMatch = unsentMessagesList.find(
-            (u) => u.messageId === fiberId || u.originalMessageId === fiberId
+          const exactMatch = unsentMessagesList.find((u) =>
+            isSameAuthoritativeRecordId(fiberId, u)
           );
           if (exactMatch && (exactMatch.text || exactMatch.attachments?.length)) {
             rowToRecordMap.set(item.rowEl, exactMatch);
@@ -2422,11 +2615,10 @@
             const rowFiber = getRowMessageId(targetRow.rowEl);
             if (
               rowFiber &&
-              isAuthoritativeMessageId(rowFiber) &&
               record.messageId &&
-              isAuthoritativeMessageId(record.messageId) &&
-              rowFiber !== record.messageId &&
-              rowFiber !== record.originalMessageId
+              !areAuthoritativeIdsCompatible(rowFiber, record.messageId, true) &&
+              (!record.originalMessageId ||
+                !areAuthoritativeIdsCompatible(rowFiber, record.originalMessageId, true))
             ) {
               continue;
             }
@@ -2858,7 +3050,11 @@
         const firstSeenAt = Number(rowEl.dataset?.fbUnsendFirstSeenAt) || Date.now();
         const isNewlyUnsentRow = Date.now() - firstSeenAt <= 6000;
 
-        const isRecordValidForThisRow = (cand, requireNameMatch = false) => {
+        const isRecordValidForThisRow = (
+          cand,
+          requireNameMatch = false,
+          allowSameE2EEThreadFallback = true
+        ) => {
           if (!cand || (!cand.text && (!cand.attachments || cand.attachments.length === 0))) {
             return false;
           }
@@ -2866,9 +3062,20 @@
             fiberId &&
             isAuthoritativeMessageId(fiberId) &&
             cand.messageId &&
-            isAuthoritativeMessageId(cand.messageId)
+            (isAuthoritativeMessageId(cand.messageId) || Boolean(extractBareStanzaId(cand.messageId)))
           ) {
-            return cand.messageId === fiberId || cand.originalMessageId === fiberId;
+            if (isSameAuthoritativeRecordId(fiberId, cand)) {
+              return true;
+            }
+            if (
+              !areAuthoritativeIdsCompatible(
+                fiberId,
+                cand.originalMessageId || cand.messageId,
+                allowSameE2EEThreadFallback
+              )
+            ) {
+              return false;
+            }
           }
           if (cand.unsentAt && cand.unsentAt > firstSeenAt + 3000) {
             return false;
@@ -2891,15 +3098,19 @@
         let matchStrategy = '';
 
         if (fiberId) {
-          const fromUnsent = unsentMessagesList.find(
-            (u) => u.messageId === fiberId || u.originalMessageId === fiberId
+          const fromUnsent = unsentMessagesList.find((u) =>
+            isSameAuthoritativeRecordId(fiberId, u)
           );
-          const fromCaptured = messagesById.get(fiberId);
-          if (isRecordValidForThisRow(fromUnsent, false)) {
+          const fiberStanza = extractBareStanzaId(fiberId);
+          const fromCaptured =
+            messagesById.get(fiberId) ||
+            (fiberStanza ? messagesById.get(fiberStanza) : null) ||
+            recentMessagesList.find((m) => isSameAuthoritativeRecordId(fiberId, m));
+          if (isRecordValidForThisRow(fromUnsent, false, false)) {
             restored = fromUnsent;
             restoredFromHistory = true;
             matchStrategy = 'fiberId-from-unsentHistory';
-          } else if (isRecordValidForThisRow(fromCaptured, false)) {
+          } else if (isRecordValidForThisRow(fromCaptured, false, false)) {
             restored = fromCaptured;
             matchStrategy = 'fiberId-from-capturedMap';
           }
@@ -2907,7 +3118,7 @@
 
         if (!restored) {
           const memRec = domRowMessages.get(rowEl);
-          if (isRecordValidForThisRow(memRec, false)) {
+          if (isRecordValidForThisRow(memRec, false, true)) {
             restored = memRec;
             matchStrategy = 'domRowMessages-WeakMap';
           }
@@ -2915,7 +3126,8 @@
 
         if (!restored) {
           const savedMid = rowEl.dataset?.fbUnsendSavedMid || '';
-          const midConsistent = !fiberId || !savedMid || fiberId === savedMid;
+          const midConsistent =
+            !fiberId || !savedMid || areAuthoritativeIdsCompatible(fiberId, savedMid, true);
           const savedText = rowEl.dataset?.fbUnsendSavedText;
           const savedMediaStr = rowEl.dataset?.fbUnsendSavedMedia;
           const savedSender = rowEl.dataset?.fbUnsendSavedSender || '';
@@ -2937,7 +3149,7 @@
               rowIndex,
               timestamp: getMonotonicTimestamp()
             };
-            if (isRecordValidForThisRow(candidate, false)) {
+            if (isRecordValidForThisRow(candidate, false, true)) {
               restored = candidate;
               matchStrategy = 'rowEl-dataset-savedText';
             }

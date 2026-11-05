@@ -384,7 +384,9 @@
   ];
 
   function isVaultToken(str) {
-    return typeof str === 'string' && (str.startsWith('@@vault') || str.startsWith('vault:'));
+    if (typeof str !== 'string') return false;
+    if (str.startsWith('@@vault') || str.startsWith('vault:')) return true;
+    return /^\d+##\d+[\s\S]*\d+##\d+$/.test(str.trim());
   }
 
   function recordVaultMapping(strA, strB) {
@@ -426,6 +428,19 @@
     if (!isVaultToken(str)) return str;
     if (vaultMap.has(str)) {
       return vaultMap.get(str);
+    }
+    if (!mawUnvaultFn) {
+      try {
+        const vaultMod = getFbModule('MAWVault');
+        if (vaultMod && typeof vaultMod.unvault === 'function') {
+          mawUnvaultFn = vaultMod.unvault.bind(vaultMod);
+        } else {
+          const transformMod = getFbModule('MAWUnvaultTransform');
+          if (typeof transformMod === 'function') {
+            mawUnvaultFn = transformMod;
+          }
+        }
+      } catch (_) {}
     }
     if (mawUnvaultFn) {
       try {
@@ -495,6 +510,7 @@
     }
 
     if (
+      isVaultToken(trimmed) ||
       trimmed.startsWith('@@vault') ||
       trimmed.startsWith('mid.$') ||
       trimmed.startsWith('unsupportedmid.$') ||
@@ -784,7 +800,18 @@
       ? attachments.map(unvaultString).filter((u) => u && !isVaultToken(u))
       : [];
 
-    const existing = capturedMessages.get(messageId);
+    const existing =
+      capturedMessages.get(messageId) ||
+      (e2eeIds.stanzaId && e2eeIds.stanzaId !== messageId
+        ? capturedMessages.get(e2eeIds.stanzaId)
+        : null);
+    if (
+      e2eeIds.stanzaId &&
+      e2eeIds.stanzaId !== messageId &&
+      capturedMessages.has(e2eeIds.stanzaId)
+    ) {
+      capturedMessages.delete(e2eeIds.stanzaId);
+    }
     if (!cleanText && cleanAttachments.length === 0) return;
 
     const isAuthoritativeModule =
@@ -856,9 +883,13 @@
     const messageId = resolveCanonicalMessageId(rawMessageId);
     if (!messageId) return;
 
-    const existing = capturedMessages.get(messageId);
-    const noticeSenderName = extractNameFromNoticeText(extraInfo.unsendNotice || '');
     const e2eeIds = extractIdsFromE2EEMsgId(messageId);
+    const existing =
+      capturedMessages.get(messageId) ||
+      (e2eeIds.stanzaId && e2eeIds.stanzaId !== messageId
+        ? capturedMessages.get(e2eeIds.stanzaId)
+        : null);
+    const noticeSenderName = extractNameFromNoticeText(extraInfo.unsendNotice || '');
 
     const finalSenderId = String(
       extraInfo.senderId || existing?.senderId || (extraInfo.isSelf === false ? e2eeIds.peerUserId : '') || ''
@@ -1517,7 +1548,7 @@
     /^(LS(UpsertMessage|DeleteThenInsertMessage|InsertMessage|ReplaceOptimisticMessage|DeleteMessage|DeleteMessageRequest|MarkMessageUnsent|HandleUnsendMessage|UpdateMessage|InsertBlobAttachment|InsertAttachment|InsertXmaAttachment|InsertStickerAttachment|VerifyContactRowExists|UpdateOrInsertContact|UpsertContact|UpdateOrInsertThread|VerifyHybridThreadExists|UpsertThread)|MAW(UnvaultTransform|Vault|ThreadSnippetFor.*Msg|BridgeBuildThreadSnippet|BridgeBuildMsg|BridgeMsg|BridgeNewMsgHandler|BridgeNewMediaHandler)|Mps(RavenToBridge|MessageToBridge|MessageTextToBridge|MediaToBridge|RevokeMessageToBridgeMsg|XmaToBridge|NoteReplyToBridge))$/i;
 
   const PASSIVE_EXPORT_CAPTURE_REGEX =
-    /^(Mps(OverBridge|RavenToBridge|MediaToBridge|MessageToBridge|MessageTextToBridge|RevokeMessageToBridgeMsg|MessageToBridgeWrapper|MessageToLoadResponse|ToBridgeMessageId|Types|LoadMessagesStep|ReactionSupplementals)|MAW(ProtobufDeserializers|AttachmentBlob\.react|GetAttachmentThumbnailBlob|DbMedia|MediaDownloadStatusBackendFetcher|DownloadMediaInWorker|DownloadMediaInWorkerDeferred|BridgeNewMsgHandler|BridgeNewMediaHandler|BridgeBuildMsg|BridgeSendAndReceive|MediaManagerUtils|MediaUtils)|WAMediaTransport\.pb|WAArmadilloApplication\.pb|WAConsumerApplication\.pb|WAHashUtils|WAByteArray|decodeProtobuf|LSDatabaseSingleton|ReQL)$/i;
+    /^(Mps(OverBridge|RavenToBridge|MediaToBridge|MessageToBridge|MessageTextToBridge|RevokeMessageToBridgeMsg|MessageToBridgeWrapper|MessageToLoadResponse|ToBridgeMessageId|Types|LoadMessagesStep|ReactionSupplementals)|MAW(Vault|UnvaultTransform|ProtobufDeserializers|AttachmentBlob\.react|GetAttachmentThumbnailBlob|DbMedia|MediaDownloadStatusBackendFetcher|DownloadMediaInWorker|DownloadMediaInWorkerDeferred|BridgeNewMsgHandler|BridgeNewMediaHandler|BridgeBuildMsg|BridgeSendAndReceive|MediaManagerUtils|MediaUtils)|WAMediaTransport\.pb|WAArmadilloApplication\.pb|WAConsumerApplication\.pb|WAHashUtils|WAByteArray|decodeProtobuf|LSDatabaseSingleton|ReQL)$/i;
 
   const INTERESTING_MODULE_NAME_REGEX =
     /^Mps[A-Z]|Attachment|Ephemeral|ViewOnce|Unsupported|MediaFallback|LightspeedRequest|LSPlatform|SyncParams|LSVersion|Capabilit|Xma|Raven|MAWDbMedia|MAWMedia|MAWBridge|WAMedia|WAArmadillo/i;
@@ -2009,6 +2040,7 @@
           const resolvedNames = resolveContactAndThreadName(cleanSenderId, cleanThreadId);
           emitToContentScript('FB_E2EE_REVOKE_RESOLVED', {
             revokeMsgId: fullMsgId,
+            revokedMsgId: fullMsgId,
             originalMsgId,
             originalStanzaId: revokedStanzaId,
             senderId: cleanSenderId,
@@ -3227,8 +3259,18 @@
     rows.forEach((rowEl) => {
       const currentId = rowEl.dataset.fbMsgId || '';
       const msgId = findFiberMessageIdForRow(rowEl);
+      if (msgId) {
+        const e2eeIds = extractIdsFromE2EEMsgId(msgId);
+        if (e2eeIds.stanzaId && e2eeIds.stanzaId !== msgId && !aliasIdMap.has(e2eeIds.stanzaId)) {
+          aliasIdMap.set(e2eeIds.stanzaId, msgId);
+        }
+      }
       if (msgId && msgId !== currentId) {
-        if (currentId) {
+        const isAliasUpgrade =
+          Boolean(currentId) &&
+          (resolveCanonicalMessageId(currentId) === msgId ||
+            resolveCanonicalMessageId(msgId) === currentId);
+        if (currentId && !isAliasUpgrade) {
           dlog('FIBER-RECYCLED', '#fd79a8', 'React tái sử dụng rowEl cho tin nhắn khác:', {
             oldId: currentId,
             newId: msgId
