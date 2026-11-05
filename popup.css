@@ -838,6 +838,17 @@ button {
   outline: none;
 }
 
+.media-expired-notice {
+  max-width: 100%;
+  padding: 7px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  background: var(--bubble-other);
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
 /* Nút thao tác: hiện khi rê chuột vào tin nhắn */
 .msg-actions {
   position: absolute;

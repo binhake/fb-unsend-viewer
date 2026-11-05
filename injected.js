@@ -850,13 +850,24 @@
       !isUnsendNoticeText(unvaultedText)
         ? unvaultedText.trim()
         : '';
+    const isDashStreamUrl = (u) =>
+      typeof u === 'string' && /[?&]efg=eyJ2ZW5jb2RlX3RhZyI6ImRhc2hf/i.test(u);
+    const isVideoLikeUrl = (u) =>
+      typeof u === 'string' &&
+      (/(\.mp4|\.webm|\.mov|\.m4v|\.ogv)(\?|#|$)/i.test(u) ||
+        /(videoclip|video_clip|\/t42\.|https?:\/\/video[a-z0-9.-]*\.fbcdn\.net|mime=video)/i.test(u));
+
     const cleanAttachments = Array.isArray(attachments)
       ? attachments
           .map(unvaultString)
           .map((u) => (isDashMpdXmlString(u) ? extractDashMpdVideoUrl(u) : u))
           .filter((u) => u && !isVaultToken(u) && !isDashMpdXmlString(u))
       : [];
-    if (unvaultedText && isDashMpdXmlString(unvaultedText)) {
+    if (
+      unvaultedText &&
+      isDashMpdXmlString(unvaultedText) &&
+      !cleanAttachments.some(isVideoLikeUrl)
+    ) {
       const mpdUrl = extractDashMpdVideoUrl(unvaultedText);
       if (mpdUrl && !cleanAttachments.includes(mpdUrl)) {
         cleanAttachments.unshift(mpdUrl);
@@ -885,12 +896,18 @@
         : existing?.text
           ? existing.text
           : cleanText;
-    const mergedAttachments = [...(existing?.attachments || [])];
+    const rawMergedAttachments = [...(existing?.attachments || [])];
     for (const url of cleanAttachments) {
-      if (!mergedAttachments.includes(url)) {
-        mergedAttachments.push(url);
+      if (!rawMergedAttachments.includes(url)) {
+        rawMergedAttachments.push(url);
       }
     }
+    const hasProgressiveVideo = rawMergedAttachments.some(
+      (u) => isVideoLikeUrl(u) && !isDashStreamUrl(u)
+    );
+    const mergedAttachments = hasProgressiveVideo
+      ? rawMergedAttachments.filter((u) => !isDashStreamUrl(u))
+      : rawMergedAttachments;
 
     const finalSenderId = String(
       senderId || existing?.senderId || (isSelf === false ? e2eeIds.peerUserId : '') || ''

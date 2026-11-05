@@ -29,7 +29,8 @@ const appState = {
   capturedMessages: [],
   tabFilter: 'all', // 'all' | 'others' | 'self' | 'media'
   threadFilter: 'ALL',
-  statusTimer: null
+  statusTimer: null,
+  lastRenderSignature: ''
 };
 
 const dom = {};
@@ -172,11 +173,15 @@ function extractDashMpdVideoUrl(text) {
   return null;
 }
 
+function isDashStreamVideoUrl(url) {
+  return typeof url === 'string' && /[?&]efg=eyJ2ZW5jb2RlX3RhZyI6ImRhc2hf/i.test(url);
+}
+
 function sanitizePopupRecord(item) {
   if (!item || typeof item !== 'object') return { item, changed: false };
   let changed = false;
   const rawAttachments = Array.isArray(item.attachments) ? item.attachments : [];
-  const cleanAttachments = [];
+  let cleanAttachments = [];
   for (const rawUrl of rawAttachments) {
     if (!rawUrl || typeof rawUrl !== 'string') continue;
     if (isDashMpdXmlString(rawUrl)) {
@@ -193,9 +198,11 @@ function sanitizePopupRecord(item) {
   let cleanText = typeof item.text === 'string' ? item.text : '';
   if (cleanText && isDashMpdXmlString(cleanText)) {
     changed = true;
-    const mpdUrl = extractDashMpdVideoUrl(cleanText);
-    if (mpdUrl && !cleanAttachments.includes(mpdUrl)) {
-      cleanAttachments.unshift(mpdUrl);
+    if (!cleanAttachments.some(u => getAttachmentMediaType(u) === 'video')) {
+      const mpdUrl = extractDashMpdVideoUrl(cleanText);
+      if (mpdUrl && !cleanAttachments.includes(mpdUrl)) {
+        cleanAttachments.unshift(mpdUrl);
+      }
     }
     cleanText = cleanAttachments.length > 0 ? '' : '🎬 [Video]';
   } else if (
@@ -205,6 +212,14 @@ function sanitizePopupRecord(item) {
     /File đính kèm không được hỗ trợ|Tin nhắn này không hiển thị trên ứng dụng này/i.test(cleanText)
   ) {
     cleanText = cleanText.replace(/\s*—\s*/g, ' - ');
+    changed = true;
+  }
+
+  const hasProgressiveVideo = cleanAttachments.some(
+    u => getAttachmentMediaType(u) === 'video' && !isDashStreamVideoUrl(u)
+  );
+  if (hasProgressiveVideo && cleanAttachments.some(isDashStreamVideoUrl)) {
+    cleanAttachments = cleanAttachments.filter(u => !isDashStreamVideoUrl(u));
     changed = true;
   }
 
@@ -224,18 +239,28 @@ function sanitizePopupRecord(item) {
 
 function getRecordAttachments(item) {
   const raw = Array.isArray(item.attachments) ? item.attachments.filter(Boolean) : [];
-  const out = [];
+  let out = [];
   for (const u of raw) {
     const clean = isDashMpdXmlString(u) ? extractDashMpdVideoUrl(u) : u;
     if (clean && !isDashMpdXmlString(clean) && !out.includes(clean)) {
       out.push(clean);
     }
   }
-  if (item.text && isDashMpdXmlString(item.text)) {
+  if (
+    item.text &&
+    isDashMpdXmlString(item.text) &&
+    !out.some(u => getAttachmentMediaType(u) === 'video')
+  ) {
     const fromText = extractDashMpdVideoUrl(item.text);
     if (fromText && !out.includes(fromText)) {
       out.unshift(fromText);
     }
+  }
+  const hasProgressiveVideo = out.some(
+    u => getAttachmentMediaType(u) === 'video' && !isDashStreamVideoUrl(u)
+  );
+  if (hasProgressiveVideo) {
+    out = out.filter(u => !isDashStreamVideoUrl(u));
   }
   return out;
 }
@@ -501,7 +526,7 @@ function buildMediaThumb(url) {
   return thumb;
 }
 
-function buildMediaItem(url) {
+function buildMediaItem(url, onExpired) {
   const mediaType = getAttachmentMediaType(url);
   if (mediaType === 'audio') {
     const audio = document.createElement('audio');
@@ -509,6 +534,13 @@ function buildMediaItem(url) {
     audio.preload = 'metadata';
     audio.src = url;
     audio.className = 'media-audio';
+    audio.addEventListener('error', function () {
+      const fallback = document.createElement('div');
+      fallback.className = 'media-expired-notice';
+      fallback.textContent = '🎵 Âm thanh không còn khả dụng (liên kết trên máy chủ Facebook đã hết hạn)';
+      audio.replaceWith(fallback);
+      if (typeof onExpired === 'function') onExpired(url);
+    });
     return audio;
   }
   if (mediaType === 'video') {
@@ -518,6 +550,13 @@ function buildMediaItem(url) {
     video.playsInline = true;
     video.src = url;
     video.className = 'media-video';
+    video.addEventListener('error', function () {
+      const fallback = document.createElement('div');
+      fallback.className = 'media-expired-notice';
+      fallback.textContent = '🎬 Video không còn khả dụng (liên kết trên máy chủ Facebook đã hết hạn)';
+      video.replaceWith(fallback);
+      if (typeof onExpired === 'function') onExpired(url);
+    });
     return video;
   }
   return buildMediaThumb(url);
@@ -554,12 +593,22 @@ function repairPopupListsIdsAndAvatars(unsentList, capturedList) {
   const groupThreadIds = new Set();
   const namesByThreadId = new Map();
 
+  const getExplicitLowerPerson = rec => {
+    const raw = !isGenericName(rec.personName) ? String(rec.personName).trim() : '';
+    if (raw && !/^(người dùng facebook|bạn|you|chính bạn)$/i.test(raw)) {
+      return raw.toLowerCase();
+    }
+    return '';
+  };
+
   for (const entry of entries) {
     const { rec } = entry;
     const sId = String(rec.senderId || '').trim().replace(/@(msgr|g\.us|c\.us)$/i, '');
     const tId = String(rec.threadId || '').trim().replace(/@(msgr|g\.us|c\.us)$/i, '');
-    const { person } = parseRecordNames(rec);
-    const pName = (person || '').trim().toLowerCase();
+    const { isSelf } = parseRecordNames(rec);
+    const pName = getExplicitLowerPerson(rec);
+    const rawMid = String(rec.messageId || rec.originalMessageId || rec.fiberMsgId || '');
+    const isDirectMsgrRecord = /^\d+@msgr\./i.test(rawMid);
 
     if (tId && /^\d{1,6}$/.test(tId)) {
       if (sId && sId.length >= 10) {
@@ -575,6 +624,7 @@ function repairPopupListsIdsAndAvatars(unsentList, capturedList) {
       sId &&
       sId === tId &&
       sId.length >= 14 &&
+      !isDirectMsgrRecord &&
       !sId.startsWith('1000') &&
       !sId.startsWith('615')
     ) {
@@ -585,7 +635,9 @@ function repairPopupListsIdsAndAvatars(unsentList, capturedList) {
     }
 
     const finalTid = String(rec.threadId || '').trim();
-    if (finalTid && finalTid.length >= 10 && pName) {
+    const isPersonalOrDirectTid =
+      isDirectMsgrRecord || finalTid.startsWith('1000') || finalTid.startsWith('615');
+    if (finalTid && finalTid.length >= 10 && pName && !isSelf && !isPersonalOrDirectTid) {
       if (!namesByThreadId.has(finalTid)) {
         namesByThreadId.set(finalTid, new Set());
       }
@@ -594,7 +646,11 @@ function repairPopupListsIdsAndAvatars(unsentList, capturedList) {
   }
 
   for (const [tId, names] of namesByThreadId.entries()) {
-    if (names.size > 1 || (tId.length >= 14 && !tId.startsWith('1000') && !tId.startsWith('615'))) {
+    if (
+      !tId.startsWith('1000') &&
+      !tId.startsWith('615') &&
+      (names.size > 1 || tId.length >= 14)
+    ) {
       groupThreadIds.add(tId);
     }
   }
@@ -615,9 +671,9 @@ function repairPopupListsIdsAndAvatars(unsentList, capturedList) {
   const senderIdNameCounts = new Map();
   for (const { rec } of entries) {
     const sId = String(rec.senderId || '').trim();
-    const { person } = parseRecordNames(rec);
-    const pName = (person || '').trim().toLowerCase();
-    if (!sId || !pName) continue;
+    const { isSelf } = parseRecordNames(rec);
+    const pName = getExplicitLowerPerson(rec);
+    if (!sId || !pName || isSelf) continue;
     if (!senderIdNameCounts.has(sId)) {
       senderIdNameCounts.set(sId, new Map());
     }
@@ -627,19 +683,21 @@ function repairPopupListsIdsAndAvatars(unsentList, capturedList) {
 
   const validOwnerBySenderId = new Map();
   for (const [sId, counts] of senderIdNameCounts.entries()) {
+    if (counts.size <= 1) {
+      for (const name of counts.keys()) {
+        validOwnerBySenderId.set(sId, name);
+      }
+      continue;
+    }
     let bestName = '';
     let bestCount = 0;
-    let tied = false;
     for (const [name, cnt] of counts.entries()) {
       if (cnt > bestCount) {
         bestCount = cnt;
         bestName = name;
-        tied = false;
-      } else if (cnt === bestCount) {
-        tied = true;
       }
     }
-    if (bestName && !tied) {
+    if (bestName) {
       validOwnerBySenderId.set(sId, bestName);
     }
   }
@@ -647,11 +705,14 @@ function repairPopupListsIdsAndAvatars(unsentList, capturedList) {
   for (const entry of entries) {
     const { rec } = entry;
     const sId = String(rec.senderId || '').trim();
-    const { person } = parseRecordNames(rec);
-    const pName = (person || '').trim().toLowerCase();
-    if (!sId || !pName) continue;
+    const { isSelf } = parseRecordNames(rec);
+    const pName = getExplicitLowerPerson(rec);
+    if (!sId || !pName || isSelf) continue;
+    const rawMid = String(rec.messageId || rec.originalMessageId || rec.fiberMsgId || '');
+    const m = rawMid.match(/^(\d{6,25})@msgr\.\d+$/);
+    if (m && m[1] === sId) continue;
     const owner = validOwnerBySenderId.get(sId);
-    if (!owner || owner !== pName) {
+    if (owner && owner !== pName) {
       rec.senderId = '';
       corruptedSet.add(rec);
       markChanged(entry);
@@ -661,9 +722,9 @@ function repairPopupListsIdsAndAvatars(unsentList, capturedList) {
   const avatarNameCounts = new Map();
   for (const { rec } of entries) {
     const av = String(rec.avatarUrl || '').trim();
-    const { person } = parseRecordNames(rec);
-    const pName = (person || '').trim().toLowerCase();
-    if (!av || !pName) continue;
+    const { isSelf } = parseRecordNames(rec);
+    const pName = getExplicitLowerPerson(rec);
+    if (!av || !pName || isSelf) continue;
     if (!avatarNameCounts.has(av)) {
       avatarNameCounts.set(av, new Map());
     }
@@ -691,10 +752,9 @@ function repairPopupListsIdsAndAvatars(unsentList, capturedList) {
   for (const entry of entries) {
     const { rec } = entry;
     const av = String(rec.avatarUrl || '').trim();
-    const { person } = parseRecordNames(rec);
-    const pName = (person || '').trim().toLowerCase();
-    if (!av) continue;
-    if (corruptedSet.has(rec) || (avatarTrueOwner.has(av) && avatarTrueOwner.get(av) !== pName)) {
+    const pName = getExplicitLowerPerson(rec);
+    if (!av || !pName) continue;
+    if (avatarTrueOwner.has(av) && avatarTrueOwner.get(av) !== pName) {
       rec.avatarUrl = '';
       markChanged(entry);
     }
@@ -825,9 +885,20 @@ function buildMessageCard(item, ts) {
     bubbleEl.hidden = false;
   }
 
+  const downloadBtn = card.querySelector('[data-action="download"]');
   if (attachments.length > 0) {
+    applyDownloadLink(downloadBtn, attachments[0]);
+    downloadBtn.hidden = false;
     const mediaEl = card.querySelector('.msg-media');
-    attachments.forEach(url => mediaEl.appendChild(buildMediaItem(url)));
+    attachments.forEach((url, idx) => {
+      mediaEl.appendChild(
+        buildMediaItem(url, function () {
+          if (idx === 0 && downloadBtn) {
+            downloadBtn.hidden = true;
+          }
+        })
+      );
+    });
     mediaEl.hidden = false;
   }
 
@@ -847,12 +918,6 @@ function buildMessageCard(item, ts) {
         }, COPY_FEEDBACK_MS);
       });
     });
-  }
-
-  if (attachments.length > 0) {
-    const downloadBtn = card.querySelector('[data-action="download"]');
-    applyDownloadLink(downloadBtn, attachments[0]);
-    downloadBtn.hidden = false;
   }
 
   card.querySelector('[data-action="delete"]').addEventListener('click', function () {
@@ -905,7 +970,28 @@ function renderList() {
   dom.unsentList.appendChild(fragment);
 }
 
+function computeUnsentRenderSignature() {
+  return JSON.stringify(
+    appState.unsentMessages.map(item => {
+      const { person, thread, isSelf } = parseRecordNames(item);
+      const av = findBestAvatarForItem(item, person, thread, isSelf);
+      return [
+        item.messageId,
+        person,
+        thread,
+        isSelf,
+        item.text,
+        getRecordAttachments(item),
+        item.anchorAboveText,
+        getRecordTime(item),
+        av
+      ];
+    })
+  );
+}
+
 function refreshView() {
+  appState.lastRenderSignature = computeUnsentRenderSignature();
   updateThreadOptions();
   renderList();
 }
@@ -915,7 +1001,7 @@ function removeUnsentMessage(messageId) {
   chrome.storage.local.set({ [STORAGE_KEY_UNSENT]: appState.unsentMessages }, refreshView);
 }
 
-function loadPopupData() {
+function loadPopupData(isBackgroundUpdate = false) {
   chrome.storage.local.get([STORAGE_KEY_UNSENT, STORAGE_KEY_MESSAGES, STORAGE_KEY_TOAST_ENABLED], function (res) {
     const rawUnsent = Array.isArray(res[STORAGE_KEY_UNSENT]) ? res[STORAGE_KEY_UNSENT] : [];
     const rawCaptured = Array.isArray(res[STORAGE_KEY_MESSAGES]) ? res[STORAGE_KEY_MESSAGES] : [];
@@ -946,10 +1032,18 @@ function loadPopupData() {
 
     // Chưa từng lưu thì coi như đang bật
     dom.toastToggle.checked = res[STORAGE_KEY_TOAST_ENABLED] !== false;
+    if (isBackgroundUpdate && appState.lastRenderSignature) {
+      dom.footerInfo.textContent = `Lưu tạm ${appState.capturedMessages.length.toLocaleString('vi-VN')} tin để đối chiếu`;
+      if (computeUnsentRenderSignature() === appState.lastRenderSignature) {
+        return;
+      }
+    }
     refreshView();
   });
 
-  chrome.runtime.sendMessage({ type: 'CLEAR_UNREAD_BADGE' });
+  if (!isBackgroundUpdate) {
+    chrome.runtime.sendMessage({ type: 'CLEAR_UNREAD_BADGE' });
+  }
 }
 
 // ============================================================================
@@ -1363,7 +1457,7 @@ function bindEvents() {
 
   chrome.storage.onChanged.addListener(function (changes, areaName) {
     if (areaName === 'local' && (changes[STORAGE_KEY_UNSENT] || changes[STORAGE_KEY_MESSAGES])) {
-      loadPopupData();
+      loadPopupData(true);
     }
   });
 }

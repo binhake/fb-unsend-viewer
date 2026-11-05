@@ -248,6 +248,10 @@
     return 'image';
   }
 
+  function isDashStreamVideoUrl(url) {
+    return typeof url === 'string' && /[?&]efg=eyJ2ZW5jb2RlX3RhZyI6ImRhc2hf/i.test(url);
+  }
+
   function sanitizeAttachmentsList(attachments) {
     if (!Array.isArray(attachments)) return [];
     const valid = [];
@@ -265,12 +269,19 @@
         valid.push(url);
       }
     }
-    const dataImages = valid.filter((u) => u.startsWith('data:image/'));
+    const hasProgressiveVideo = valid.some(
+      (u) => getAttachmentMediaType(u) === 'video' && !isDashStreamVideoUrl(u)
+    );
+    const dedupedVideos = hasProgressiveVideo
+      ? valid.filter((u) => !isDashStreamVideoUrl(u))
+      : valid;
+
+    const dataImages = dedupedVideos.filter((u) => u.startsWith('data:image/'));
     if (dataImages.length > 0) {
-      const nonImages = valid.filter((u) => getAttachmentMediaType(u) !== 'image');
+      const nonImages = dedupedVideos.filter((u) => getAttachmentMediaType(u) !== 'image');
       return [...dataImages, ...nonImages];
     }
-    return valid;
+    return dedupedVideos;
   }
 
   function isExtensionContextValid() {
@@ -358,11 +369,21 @@
     const groupThreadIds = new Set();
     const namesByThreadId = new Map();
 
-    // 1. Sửa các bản ghi có threadId là số byte <= 6 chữ số (lỗi gói Attachment cũ) hoặc senderId === threadId nhóm
+    // 1. Sửa các bản ghi có threadId là số byte <= 6 chữ số (lỗi gói Attachment cũ) hoặc senderId === threadId nhóm, đồng thời khử trùng lặp video DASH
     for (const rec of allRecords) {
+      if (Array.isArray(rec.attachments) && rec.attachments.length > 1) {
+        const dedupedAtt = sanitizeAttachmentsList(rec.attachments);
+        if (dedupedAtt.length !== rec.attachments.length) {
+          rec.attachments = dedupedAtt;
+          changed = true;
+        }
+      }
+
       const sId = String(rec.senderId || '').trim().replace(/@(msgr|g\.us|c\.us)$/i, '');
       const tId = String(rec.threadId || '').trim().replace(/@(msgr|g\.us|c\.us)$/i, '');
       const pName = String(rec.personName || '').trim().toLowerCase();
+      const rawMid = String(rec.messageId || rec.originalMessageId || rec.fiberMsgId || '');
+      const isDirectMsgrRecord = /^\d+@msgr\./i.test(rawMid);
 
       if (tId && /^\d{1,6}$/.test(tId)) {
         if (sId && sId.length >= 10) {
@@ -378,6 +399,7 @@
         sId &&
         sId === tId &&
         sId.length >= 14 &&
+        !isDirectMsgrRecord &&
         !sId.startsWith('1000') &&
         !sId.startsWith('615')
       ) {
@@ -388,7 +410,16 @@
       }
 
       const finalTid = String(rec.threadId || '').trim();
-      if (finalTid && finalTid.length >= 10 && pName) {
+      const isPersonalOrDirectTid =
+        isDirectMsgrRecord || finalTid.startsWith('1000') || finalTid.startsWith('615');
+      if (
+        finalTid &&
+        finalTid.length >= 10 &&
+        pName &&
+        !rec.isSelf &&
+        !isSelfKeyword(pName) &&
+        !isPersonalOrDirectTid
+      ) {
         if (!namesByThreadId.has(finalTid)) {
           namesByThreadId.set(finalTid, new Set());
         }
@@ -397,7 +428,11 @@
     }
 
     for (const [tId, names] of namesByThreadId.entries()) {
-      if (names.size > 1 || (tId.length >= 14 && !tId.startsWith('1000') && !tId.startsWith('615'))) {
+      if (
+        !tId.startsWith('1000') &&
+        !tId.startsWith('615') &&
+        (names.size > 1 || tId.length >= 14)
+      ) {
         groupThreadIds.add(tId);
       }
     }
@@ -420,7 +455,7 @@
     for (const rec of allRecords) {
       const sId = String(rec.senderId || '').trim();
       const pName = String(rec.personName || '').trim().toLowerCase();
-      if (!sId || !pName) continue;
+      if (!sId || !pName || rec.isSelf || isSelfKeyword(pName)) continue;
       if (!senderIdNameCounts.has(sId)) {
         senderIdNameCounts.set(sId, new Map());
       }
@@ -430,19 +465,21 @@
 
     const validOwnerBySenderId = new Map();
     for (const [sId, counts] of senderIdNameCounts.entries()) {
+      if (counts.size <= 1) {
+        for (const name of counts.keys()) {
+          validOwnerBySenderId.set(sId, name);
+        }
+        continue;
+      }
       let bestName = '';
       let bestCount = 0;
-      let tied = false;
       for (const [name, cnt] of counts.entries()) {
         if (cnt > bestCount) {
           bestCount = cnt;
           bestName = name;
-          tied = false;
-        } else if (cnt === bestCount) {
-          tied = true;
         }
       }
-      if (bestName && !tied) {
+      if (bestName) {
         validOwnerBySenderId.set(sId, bestName);
       }
     }
@@ -450,9 +487,14 @@
     for (const rec of allRecords) {
       const sId = String(rec.senderId || '').trim();
       const pName = String(rec.personName || '').trim().toLowerCase();
-      if (!sId || !pName) continue;
+      if (!sId || !pName || rec.isSelf || isSelfKeyword(pName)) continue;
+      const e2eeIds = extractPeerIdFromE2EEMsgId(
+        rec.messageId || rec.originalMessageId || rec.fiberMsgId || '',
+        Boolean(rec.isSelf)
+      );
+      if (e2eeIds.senderId && e2eeIds.senderId === sId) continue;
       const owner = validOwnerBySenderId.get(sId);
-      if (!owner || owner !== pName) {
+      if (owner && owner !== pName) {
         rec.senderId = '';
         corruptedRecordSet.add(rec);
         changed = true;
@@ -464,7 +506,7 @@
     for (const rec of allRecords) {
       const av = String(rec.avatarUrl || '').trim();
       const pName = String(rec.personName || '').trim().toLowerCase();
-      if (!av || !pName) continue;
+      if (!av || !pName || rec.isSelf || isSelfKeyword(pName)) continue;
       if (!avatarNameCounts.has(av)) {
         avatarNameCounts.set(av, new Map());
       }
@@ -493,12 +535,21 @@
       const av = String(rec.avatarUrl || '').trim();
       const pName = String(rec.personName || '').trim().toLowerCase();
       if (!av) continue;
-      if (
-        corruptedRecordSet.has(rec) ||
-        (avatarTrueOwner.has(av) && avatarTrueOwner.get(av) !== pName)
-      ) {
+      if (avatarTrueOwner.has(av) && avatarTrueOwner.get(av) !== pName) {
         rec.avatarUrl = '';
         changed = true;
+      }
+    }
+
+    for (const gId of groupThreadIds) {
+      personAvatarByIdMap.delete(gId);
+      for (const [k, v] of personIdByThreadAndNameMap.entries()) {
+        if (v === gId) personIdByThreadAndNameMap.delete(k);
+      }
+    }
+    for (const [k, av] of personAvatarByThreadAndNameMap.entries()) {
+      if (avatarTrueOwner.has(av) && !k.endsWith(`__${avatarTrueOwner.get(av)}`)) {
+        personAvatarByThreadAndNameMap.delete(k);
       }
     }
 
@@ -764,7 +815,11 @@
     }
     const finalSender = formatSenderAndThreadName(cleanPerson, cleanThread, cleanSender);
     const cleanAttachments = sanitizeAttachmentsList(base.attachments);
-    if (base.text && isDashMpdXmlString(base.text)) {
+    if (
+      base.text &&
+      isDashMpdXmlString(base.text) &&
+      !cleanAttachments.some((u) => getAttachmentMediaType(u) === 'video')
+    ) {
       const mpdUrl = extractDashMpdVideoUrl(base.text);
       if (mpdUrl && !cleanAttachments.includes(mpdUrl)) {
         cleanAttachments.unshift(mpdUrl);
@@ -4051,6 +4106,12 @@
       audio.src = url;
       audio.className = isToast ? 'fb-unsend-toast-audio' : 'fb-unsend-restored-audio';
       audio.addEventListener('click', (e) => e.stopPropagation());
+      audio.addEventListener('error', () => {
+        const notice = document.createElement('span');
+        notice.className = 'fb-unsend-inline-text';
+        notice.textContent = '🎵 Âm thanh không còn khả dụng (liên kết trên máy chủ Facebook đã hết hạn)';
+        audio.replaceWith(notice);
+      });
       return audio;
     }
     if (mediaType === 'video') {
@@ -4061,6 +4122,12 @@
       video.src = url;
       video.className = isToast ? 'fb-unsend-toast-video' : 'fb-unsend-restored-video';
       video.addEventListener('click', (e) => e.stopPropagation());
+      video.addEventListener('error', () => {
+        const notice = document.createElement('span');
+        notice.className = 'fb-unsend-inline-text';
+        notice.textContent = '🎬 Video không còn khả dụng (liên kết trên máy chủ Facebook đã hết hạn)';
+        video.replaceWith(notice);
+      });
       return video;
     }
     const img = document.createElement('img');
