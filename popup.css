@@ -60,8 +60,8 @@
 
 html,
 body {
-  width: 400px;
-  height: 580px;
+  width: 420px;
+  height: 600px;
 }
 
 body {
@@ -266,6 +266,41 @@ button {
   background: var(--danger-soft);
   color: var(--danger);
   filter: none;
+}
+
+/* Nút chuông bật/tắt thông báo: bật thì xanh, tắt thì xám + chuông gạch chéo */
+.toggle-btn {
+  position: relative;
+  cursor: pointer;
+}
+
+.toggle-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggle-btn:has(.toggle-input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.toggle-btn .icon-off,
+.toggle-btn:has(.toggle-input:not(:checked)) .icon-on {
+  display: none;
+}
+
+.toggle-btn:has(.toggle-input:not(:checked)) .icon-off {
+  display: block;
+}
+
+.toggle-btn:has(.toggle-input:checked) {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.toggle-btn:has(.toggle-input:not(:checked)) {
+  color: var(--muted);
 }
 
 /* ===== Thanh thông báo bản cập nhật mới (GitHub Releases) ===== */
@@ -610,22 +645,27 @@ button {
 }
 
 /* ===== Danh sách tin nhắn ===== */
-.unsent-list {
+/* Bộ lọc và danh sách cuộn chung: kéo xuống thì bộ lọc trôi đi, nhường chỗ cho tin nhắn */
+.scroll-area {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.unsent-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  overflow-y: auto;
-  padding: 12px;
+  gap: 10px;
+  padding: 10px 12px 12px;
 }
 
 .day-group {
   flex: none;
-  padding: 14px 8px 6px;
+  padding: 10px 6px 4px;
 }
 
 .day-label {
-  margin: 0 8px 4px;
+  margin: 0 8px 2px;
   color: var(--muted);
   font-size: 13px;
   font-weight: 700;
@@ -637,7 +677,7 @@ button {
   position: relative;
   display: flex;
   gap: 10px;
-  padding: 10px 8px;
+  padding: 8px;
   border-radius: 8px;
   transition: background-color 0.15s;
 }
@@ -667,8 +707,8 @@ button {
   display: grid;
   place-items: center;
   flex: none;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   color: #ffffff;
   font-size: 13px;
@@ -691,12 +731,45 @@ button {
   font-size: 11px;
 }
 
+/* Lưới: tên + giờ / đoạn chat · sau tin (chung 1 dòng) / bong bóng / ảnh */
 .msg-main {
   flex: 1;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  grid-template-areas:
+    'head head'
+    'thread anchor'
+    'bubble bubble'
+    'media media';
+  align-content: start;
+}
+
+.msg-head {
+  grid-area: head;
+}
+
+.msg-thread {
+  grid-area: thread;
+}
+
+.msg-anchor {
+  grid-area: anchor;
+}
+
+.msg-bubble {
+  grid-area: bubble;
+}
+
+.msg-media {
+  grid-area: media;
+  margin-top: 4px;
+}
+
+/* Có cả đoạn chat lẫn "sau tin" thì ngăn cách bằng dấu chấm */
+.msg-thread:not([hidden]) + .msg-anchor::before {
+  content: '·';
+  margin: 0 6px;
 }
 
 .msg-head {
@@ -742,7 +815,7 @@ button {
   align-items: center;
   gap: 5px;
   min-width: 0;
-  margin-top: -2px;
+  margin-top: 1px;
   color: var(--muted);
   font-size: 12px;
 }
@@ -762,10 +835,10 @@ button {
 
 /* Bong bóng chat giống Messenger: xám cho người khác, xanh cho bản thân */
 .msg-bubble {
-  align-self: flex-start;
+  justify-self: start;
   max-width: 100%;
-  margin-top: 2px;
-  padding: 7px 12px;
+  margin-top: 4px;
+  padding: 6px 12px;
   border-radius: 18px;
   background: var(--bubble-other);
   font-size: 14px;
@@ -957,6 +1030,7 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  margin-left: auto;
 }
 
 .author-credit {
@@ -1030,7 +1104,6 @@ button {
   z-index: 50;
   display: flex;
   align-items: center;
-  margin-left: auto;
   gap: 8px;
   width: fit-content;
   margin: 0 auto;
