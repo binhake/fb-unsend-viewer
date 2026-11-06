@@ -915,8 +915,12 @@
   }
 
   function mergeEditHistoryLists(existingRec, incomingRec) {
-    const existingList = sanitizeEditHistoryList(existingRec?.editHistory, existingRec?.text);
-    const incomingList = sanitizeEditHistoryList(incomingRec?.editHistory, incomingRec?.text);
+    const existingList = Array.isArray(existingRec)
+      ? sanitizeEditHistoryList(existingRec, '')
+      : sanitizeEditHistoryList(existingRec?.editHistory, existingRec?.text);
+    const incomingList = Array.isArray(incomingRec)
+      ? sanitizeEditHistoryList(incomingRec, '')
+      : sanitizeEditHistoryList(incomingRec?.editHistory, incomingRec?.text);
     if (existingList.length === 0) return incomingList;
     if (incomingList.length === 0) return existingList;
 
@@ -934,7 +938,8 @@
     }
 
     const merged = [...existingList];
-    const lastEditAt = existingRec?.lastEditAt || existingRec?.updatedAt || 0;
+    const lastEditAt =
+      (!Array.isArray(existingRec) && (existingRec?.lastEditAt || existingRec?.updatedAt)) || 0;
     for (const item of incomingList) {
       if (merged[merged.length - 1] === item) continue;
       if (!merged.includes(item)) {
@@ -942,7 +947,7 @@
       } else if (
         incomingList.length === 1 &&
         Date.now() - lastEditAt > 1500 &&
-        Boolean(incomingRec?.isLiveEdit)
+        Boolean(!Array.isArray(incomingRec) && incomingRec?.isLiveEdit)
       ) {
         merged.push(item);
       }
@@ -2156,10 +2161,35 @@
         ) || null;
     }
 
-    const mergedEditHistory = mergeEditHistoryLists(existing, unsentData);
+    let domMatchedRowRec = null;
+    let domSavedHistoryOnRow = [];
+    try {
+      const chatRows = getActualChatRows();
+      for (const rEl of chatRows) {
+        const rMid = getRowMessageId(rEl) || rEl.dataset?.fbUnsendSavedMid || '';
+        if (
+          rMid &&
+          (rMid === unsentData.messageId ||
+            (unsentData.rawMessageId && rMid === unsentData.rawMessageId) ||
+            (unsentStanzaId && extractBareStanzaId(rMid) === unsentStanzaId))
+        ) {
+          domMatchedRowRec = domRowMessages.get(rEl) || null;
+          if (rEl.dataset?.fbUnsendSavedEditHistory) {
+            domSavedHistoryOnRow = JSON.parse(rEl.dataset.fbUnsendSavedEditHistory);
+          }
+          break;
+        }
+      }
+    } catch (_) {}
+
+    const mergedEditHistory = mergeEditHistoryLists(
+      mergeEditHistoryLists(existing, domMatchedRowRec),
+      mergeEditHistoryLists(domSavedHistoryOnRow, unsentData)
+    );
     const originalText =
       (mergedEditHistory.length > 0 ? mergedEditHistory[mergedEditHistory.length - 1] : '') ||
       existing?.text ||
+      domMatchedRowRec?.text ||
       unsentData.text ||
       '';
     const originalAttachments = sanitizeAttachmentsList([
@@ -2756,7 +2786,9 @@
     const rowAvatarUrl = extractAvatarFromChatRow(rowEl, rowSenderName);
 
     const hasRestoredDomNodes = Array.from(
-      rowEl.querySelectorAll('.fb-unsend-inline-text, .fb-unsend-media-list')
+      rowEl.querySelectorAll(
+        '.fb-unsend-inline-text, .fb-unsend-media-list, .fb-unsend-edit-history-wrap'
+      )
     ).some((el) => !el.closest('.fb-unsend-community-restored-list'));
     const currentFiberId = getRowMessageId(rowEl);
     const restoredMid = rowEl.dataset.fbUnsendRestoredMid || '';
@@ -2780,11 +2812,15 @@
         if (isMidChanged) {
           delete rowEl.dataset.fbUnsendMatchedId;
         }
-        rowEl.querySelectorAll('.fb-unsend-inline-text, .fb-unsend-media-list').forEach((n) => {
-          if (!n.closest('.fb-unsend-community-restored-list')) {
-            n.remove();
-          }
-        });
+        rowEl
+          .querySelectorAll(
+            '.fb-unsend-inline-text, .fb-unsend-media-list, .fb-unsend-edit-history-wrap'
+          )
+          .forEach((n) => {
+            if (!n.closest('.fb-unsend-community-restored-list')) {
+              n.remove();
+            }
+          });
         rowEl
           .querySelectorAll('.fb-unsend-restored-bubble')
           .forEach((n) => {
@@ -2808,7 +2844,13 @@
     let unsentNoticeEl = null;
     const allElements = rowEl.querySelectorAll('div, span, i, em');
     for (const el of allElements) {
-      if (el.closest('h3, h4, h5, h6, .fb-unsend-community-restored-list')) continue;
+      if (
+        el.closest(
+          'h3, h4, h5, h6, .fb-unsend-community-restored-list, .fb-unsend-edit-history-wrap, .fb-unsend-media-list, .fb-unsend-inline-text'
+        )
+      ) {
+        continue;
+      }
       if (el.childElementCount === 0) {
         const txt = (el.textContent || '').trim();
         if (txt && txt.length < 180 && UNSEND_REGEX.test(txt)) {
@@ -2820,11 +2862,23 @@
 
     if (!unsentNoticeEl) {
       for (const el of allElements) {
-        if (el.closest('h3, h4, h5, h6, .fb-unsend-community-restored-list')) continue;
+        if (
+          el.closest(
+            'h3, h4, h5, h6, .fb-unsend-community-restored-list, .fb-unsend-edit-history-wrap, .fb-unsend-media-list, .fb-unsend-inline-text'
+          )
+        ) {
+          continue;
+        }
         const txt = (el.textContent || '').trim();
         if (txt && txt.length < 180 && UNSEND_REGEX.test(txt)) {
           const hasMatchingChild = Array.from(el.querySelectorAll('div, span, i, em')).some((c) => {
-            if (c.closest('.fb-unsend-community-restored-list')) return false;
+            if (
+              c.closest(
+                '.fb-unsend-community-restored-list, .fb-unsend-edit-history-wrap, .fb-unsend-media-list, .fb-unsend-inline-text'
+              )
+            ) {
+              return false;
+            }
             const cTxt = (c.textContent || '').trim();
             return cTxt && cTxt.length < 180 && UNSEND_REGEX.test(cTxt);
           });
@@ -2886,7 +2940,7 @@
       ) {
         continue;
       }
-      if (el.childElementCount === 0) {
+      if (el.childElementCount <= 1) {
         const t = (el.textContent || '').trim();
         if (t && t.length <= 60 && EDIT_ROW_LABEL_REGEX.test(t)) {
           isEditedRow = true;
@@ -2898,7 +2952,10 @@
     }
 
     const texts = [];
-    const textNodes = rowEl.querySelectorAll('div[dir="auto"]');
+    const textSelector = hasExpandedEditHistory
+      ? 'div[dir="auto"], span[dir="auto"]'
+      : 'div[dir="auto"]';
+    const textNodes = rowEl.querySelectorAll(textSelector);
     textNodes.forEach((el) => {
       if (
         el.closest(
@@ -2907,11 +2964,13 @@
       ) {
         return;
       }
-      if (el.parentElement?.closest('div[dir="auto"]')) return;
+      if (el.parentElement?.closest(textSelector)) return;
+      if (el.querySelector(textSelector)) return;
 
       const t = extractNodeTextWithEmoji(el).trim();
       if (!t) return;
       if (UNSEND_REGEX.test(t) || UI_IGNORE_REGEX.test(t) || EDIT_ROW_LABEL_REGEX.test(t)) return;
+      if (rowSenderName && t.toLowerCase() === rowSenderName.toLowerCase()) return;
       if (hasExpandedEditHistory) {
         if (texts.length === 0 || texts[texts.length - 1] !== t) {
           texts.push(t);
@@ -4414,8 +4473,15 @@
     let curr = noticeEl;
     let roundedCandidate = null;
 
-    for (let depth = 0; depth < 6 && curr && curr !== rowEl; depth++) {
+    for (
+      let depth = 0;
+      depth < 6 && curr && curr !== rowEl && (!rowEl || rowEl.contains(curr));
+      depth++
+    ) {
       try {
+        if (rowEl && curr.offsetWidth > 0 && rowEl.offsetWidth > 0 && curr.offsetWidth >= rowEl.offsetWidth * 0.92) {
+          break;
+        }
         const cs = window.getComputedStyle(curr);
         const borderW = parseFloat(cs.borderTopWidth) || parseFloat(cs.borderLeftWidth) || 0;
         const radius = parseFloat(cs.borderTopLeftRadius) || 0;
@@ -4734,6 +4800,9 @@
 
     if (hasEditHistory) {
       noticeEl.textContent = `${baseText}:`;
+      targetContainer
+        .querySelectorAll('.fb-unsend-edit-history-wrap')
+        .forEach((el) => el.remove());
       targetContainer.appendChild(
         createDomEditHistoryElement(editHistory, Boolean(data.isSelf))
       );

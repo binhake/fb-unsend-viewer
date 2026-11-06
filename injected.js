@@ -2670,7 +2670,19 @@
           (isExplicitInsertMsgFunc && directTextLiterals.length > 0) ||
           directMediaUrls.length > 0
         ) {
-          if (!timestamp || isOldHistoricalTimestamp(timestamp)) return;
+          const existingInMap = capturedMessages.get(resolvedId);
+          const isEditLikeStep =
+            /^(upsertMessage|deleteThenInsertMessage|replaceOptimisticMessage|editMessage|replaceMessageText|updateMessageText|insertMessageEditHistory)$/i.test(
+              currentFunc
+            );
+          const effectiveTs =
+            timestamp || existingInMap?.timestamp || (isEditLikeStep ? Date.now() : null);
+          if (
+            !effectiveTs ||
+            (!existingInMap && !isEditLikeStep && isOldHistoricalTimestamp(effectiveTs))
+          ) {
+            return;
+          }
           registerCapturedMessage({
             messageId: primaryId,
             altIds: allIds,
@@ -2678,8 +2690,9 @@
             senderId,
             threadId,
             attachments: directMediaUrls,
-            timestamp,
-            source: context.source
+            timestamp: effectiveTs,
+            source: `${context.source}:${currentFunc}`,
+            allowHistoricalCapture: Boolean(existingInMap || isEditLikeStep)
           });
         }
       }
@@ -3527,6 +3540,7 @@
           delete rowEl.dataset.fbUnsendFirstSeenAt;
           delete rowEl.dataset.fbUnsendSavedMid;
           delete rowEl.dataset.fbUnsendSavedText;
+          delete rowEl.dataset.fbUnsendSavedEditHistory;
           delete rowEl.dataset.fbUnsendSavedMedia;
           delete rowEl.dataset.fbUnsendSavedSender;
           delete rowEl.dataset.fbFiberMedia;
