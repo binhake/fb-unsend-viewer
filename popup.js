@@ -1202,13 +1202,11 @@ function formatMediaStorageBytes(bytes) {
 function computeMediaStorageStats() {
   let totalBytes = 0;
   let unsentFileCount = 0;
-  let totalFileCount = 0;
 
   for (const item of appState.unsentMessages) {
     if (!item || !Array.isArray(item.attachments)) continue;
     const { renderUrls, posterUrl } = splitVideoPosterFromAttachments(getRecordAttachments(item));
     unsentFileCount += renderUrls.length;
-    totalFileCount += renderUrls.length;
     for (const u of item.attachments) {
       if (typeof u === 'string' && u) {
         totalBytes += u.length;
@@ -1219,20 +1217,10 @@ function computeMediaStorageStats() {
     }
   }
 
-  for (const item of appState.capturedMessages) {
-    if (!item || !Array.isArray(item.attachments) || item.attachments.length === 0) continue;
-    for (const u of item.attachments) {
-      if (typeof u === 'string' && u) {
-        totalBytes += u.length;
-        totalFileCount++;
-      }
-    }
-  }
-
   return {
     totalBytes,
     unsentFileCount,
-    totalFileCount,
+    totalFileCount: unsentFileCount,
     formattedSize: formatMediaStorageBytes(totalBytes)
   };
 }
@@ -1240,9 +1228,8 @@ function computeMediaStorageStats() {
 function updateMediaStorageBar() {
   if (!dom.mediaStorageValue || !dom.clearMediaBtn) return;
   const stats = computeMediaStorageStats();
-  const displayCount = stats.unsentFileCount || stats.totalFileCount;
-  dom.mediaStorageValue.textContent = `${stats.formattedSize} (${displayCount.toLocaleString('vi-VN')} tệp)`;
-  dom.clearMediaBtn.disabled = stats.totalFileCount === 0 && stats.totalBytes === 0;
+  dom.mediaStorageValue.textContent = `${stats.formattedSize} (${stats.unsentFileCount.toLocaleString('vi-VN')} tệp)`;
+  dom.clearMediaBtn.disabled = stats.unsentFileCount === 0 && stats.totalBytes === 0;
 }
 
 const MAX_POPUP_ARCHIVE_BYTES = 25 * 1024 * 1024;
@@ -1691,11 +1678,11 @@ function openConfirmModal(mode = 'all') {
   appState.confirmMode = mode;
   if (mode === 'media') {
     const stats = computeMediaStorageStats();
-    const displayCount = (stats.unsentFileCount || stats.totalFileCount).toLocaleString('vi-VN');
+    const displayCount = stats.unsentFileCount.toLocaleString('vi-VN');
     if (dom.confirmTitle) {
-      dom.confirmTitle.textContent = 'Xóa toàn bộ ảnh/video/audio?';
+      dom.confirmTitle.textContent = 'Xóa toàn bộ ảnh/video/audio bị gỡ?';
     }
-    dom.confirmOk.textContent = 'Xóa media';
+    dom.confirmOk.textContent = 'Xóa';
     const strong = document.createElement('strong');
     strong.textContent = `${displayCount} tệp đính kèm (${stats.formattedSize})`;
     dom.confirmDesc.replaceChildren(
