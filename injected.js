@@ -706,6 +706,150 @@
   }
 
   let lsContactsSynced = false;
+  let lsEditHistorySyncInFlight = false;
+
+  async function syncEditHistoryFromLSDatabase(targetMessageId = '') {
+    if (lsEditHistorySyncInFlight) return;
+    lsEditHistorySyncInFlight = true;
+    try {
+      const dbMod = getFbModule('LSDatabaseSingleton');
+      const reqlMod = getFbModule('ReQL');
+      if (
+        !dbMod ||
+        !reqlMod ||
+        typeof reqlMod.fromTableAscending !== 'function' ||
+        typeof reqlMod.toArrayAsync !== 'function'
+      ) {
+        return;
+      }
+      const rawDb =
+        typeof dbMod.getLSDatabaseSingletonPromiseOrValue === 'function'
+          ? await dbMod.getLSDatabaseSingletonPromiseOrValue()
+          : await dbMod.LSDatabaseSingleton;
+      if (!rawDb?.tables || typeof rawDb.tables !== 'object') return;
+
+      const editTableNames = Object.keys(rawDb.tables).filter(
+        (tName) => /edit/i.test(tName) && rawDb.tables[tName]
+      );
+      if (editTableNames.length === 0) return;
+
+      const canonicalTarget = targetMessageId ? resolveCanonicalMessageId(targetMessageId) : '';
+      const historyByMsgId = new Map();
+
+      for (const tName of editTableNames) {
+        const tableObj = rawDb.tables[tName];
+        wrapReStoreTable(tableObj, tName);
+        let rows = [];
+        try {
+          rows = await reqlMod.toArrayAsync(reqlMod.fromTableAscending(tableObj));
+        } catch (_) {
+          continue;
+        }
+        if (!Array.isArray(rows)) continue;
+        for (const row of rows) {
+          if (!row || typeof row !== 'object') continue;
+          const rawMid =
+            row.messageId ||
+            row.message_id ||
+            row.msgId ||
+            row.offlineThreadingId ||
+            row.offline_threading_id ||
+            '';
+          if (!rawMid) continue;
+          const mid = resolveCanonicalMessageId(unvaultString(String(rawMid)).trim());
+          if (!mid) continue;
+          if (canonicalTarget && mid !== canonicalTarget) continue;
+
+          const rawTxt =
+            row.text ??
+            row.body ??
+            row.editedText ??
+            row.edited_text ??
+            row.previousText ??
+            row.previous_text ??
+            row.messageText ??
+            '';
+          const cleanTxt = typeof rawTxt === 'string' ? unvaultString(rawTxt).trim() : '';
+          if (!cleanTxt || isTechnicalString(cleanTxt)) continue;
+
+          let ts = 0;
+          const tsCands = [
+            row.editTimestampMs,
+            row.edit_timestamp_ms,
+            row.timestampMs,
+            row.timestamp_ms,
+            row.timestamp
+          ];
+          for (const c of tsCands) {
+            if (typeof c === 'number' && c > 0) {
+              ts = c;
+              break;
+            } else if (Array.isArray(c)) {
+              const p = parseLSInt64(c);
+              if (p && Number(p) > 0) {
+                ts = Number(p);
+                break;
+              }
+            }
+          }
+
+          if (!historyByMsgId.has(mid)) {
+            historyByMsgId.set(mid, []);
+          }
+          historyByMsgId.get(mid).push({ text: cleanTxt, ts });
+        }
+      }
+
+      for (const [mid, entries] of historyByMsgId.entries()) {
+        entries.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+        const existing = capturedMessages.get(mid);
+        const mergedHist = [];
+        const pushUnique = (t) => {
+          if (!t) return;
+          if (mergedHist.length === 0 || mergedHist[mergedHist.length - 1] !== t) {
+            if (!mergedHist.includes(t)) {
+              mergedHist.push(t);
+            }
+          }
+        };
+        if (Array.isArray(existing?.editHistory) && existing.editHistory.length > 0) {
+          pushUnique(existing.editHistory[0]);
+        }
+        for (const e of entries) {
+          pushUnique(e.text);
+        }
+        if (Array.isArray(existing?.editHistory)) {
+          for (const h of existing.editHistory) {
+            pushUnique(h);
+          }
+        }
+        if (existing?.text) {
+          pushUnique(existing.text);
+        }
+        if (mergedHist.length > (existing?.editHistory?.length || 0)) {
+          const base = existing || {
+            messageId: mid,
+            text: mergedHist[mergedHist.length - 1],
+            attachments: [],
+            timestamp: Date.now(),
+            source: 'LSDatabase:edit_history'
+          };
+          const updated = {
+            ...base,
+            text: mergedHist[mergedHist.length - 1] || base.text,
+            editHistory: mergedHist,
+            lastEditAt: Date.now()
+          };
+          capturedMessages.set(mid, updated);
+          emitToContentScript(updated.isUnsent ? 'FB_MSG_UNSENT' : 'FB_MSG_CAPTURED', updated);
+        }
+      }
+    } catch (_) {
+    } finally {
+      lsEditHistorySyncInFlight = false;
+    }
+  }
+
   async function syncContactsFromLSDatabase() {
     if (lsContactsSynced) return;
     try {
@@ -1093,6 +1237,7 @@
   function triggerMessageUnsent(rawMessageId, extraInfo = {}) {
     const messageId = resolveCanonicalMessageId(rawMessageId);
     if (!messageId) return;
+    syncEditHistoryFromLSDatabase(messageId);
 
     const e2eeIds = extractIdsFromE2EEMsgId(messageId);
     const existing =
@@ -3583,6 +3728,7 @@
     if (!lsContactsSynced) {
       syncContactsFromLSDatabase();
     }
+    syncEditHistoryFromLSDatabase();
     let updatedCount = 0;
     const rows = document.querySelectorAll('div[data-scope="messages_table"]');
     rows.forEach((rowEl) => {

@@ -16,7 +16,9 @@
     "unlimitedStorage"
   ],
   "host_permissions": [
-    "*://*.facebook.com/*"
+    "*://*.facebook.com/*",
+    "*://*.fbcdn.net/*",
+    "*://*.fbsbx.com/*"
   ],
   "background": {
     "service_worker": "background.js"

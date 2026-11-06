@@ -174,4 +174,40 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     });
     return true;
   }
+
+  if (message.type === 'FETCH_MEDIA_AS_BASE64') {
+    const mediaUrl = typeof message.url === 'string' ? message.url.trim() : '';
+    const maxBytes = Number(message.maxBytes) || 15 * 1024 * 1024;
+    if (!/^https?:\/\//i.test(mediaUrl)) {
+      sendResponse({ ok: false, dataUrl: '' });
+      return false;
+    }
+    fetch(mediaUrl, { credentials: 'omit', cache: 'force-cache' })
+      .then((resp) => {
+        if (!resp || !resp.ok) return null;
+        return resp.blob();
+      })
+      .then((blob) => {
+        if (!blob || blob.size === 0 || blob.size > maxBytes) {
+          sendResponse({ ok: false, dataUrl: '' });
+          return;
+        }
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const res = typeof reader.result === 'string' ? reader.result : '';
+          sendResponse({
+            ok: res.startsWith('data:'),
+            dataUrl: res.startsWith('data:') ? res : ''
+          });
+        };
+        reader.onerror = () => {
+          sendResponse({ ok: false, dataUrl: '' });
+        };
+        reader.readAsDataURL(blob);
+      })
+      .catch(() => {
+        sendResponse({ ok: false, dataUrl: '' });
+      });
+    return true;
+  }
 });

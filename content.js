@@ -1246,45 +1246,40 @@
       return inFlightMediaArchive.get(url);
     }
 
-    const p = fetch(url, { credentials: 'omit' })
-      .then((resp) => {
-        if (!resp || !resp.ok) {
-          failedMediaArchiveUrls.add(url);
-          return null;
-        }
-        return resp.blob();
-      })
-      .then((blob) => {
-        if (!blob || blob.size === 0 || blob.size > MAX_ARCHIVE_MEDIA_BYTES) {
-          failedMediaArchiveUrls.add(url);
-          return '';
-        }
-        return new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            const res = typeof reader.result === 'string' ? reader.result : '';
-            if (res.startsWith('data:')) {
-              archivedBase64ByUrl.set(url, res);
-              resolve(res);
+    if (!isExtensionContextValid() || !chrome?.runtime?.sendMessage) {
+      return Promise.resolve('');
+    }
+
+    const p = new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(
+          {
+            type: 'FETCH_MEDIA_AS_BASE64',
+            url,
+            maxBytes: MAX_ARCHIVE_MEDIA_BYTES
+          },
+          (resp) => {
+            if (chrome.runtime?.lastError || !resp?.ok || typeof resp.dataUrl !== 'string') {
+              failedMediaArchiveUrls.add(url);
+              resolve('');
+              return;
+            }
+            if (resp.dataUrl.startsWith('data:')) {
+              archivedBase64ByUrl.set(url, resp.dataUrl);
+              resolve(resp.dataUrl);
             } else {
               failedMediaArchiveUrls.add(url);
               resolve('');
             }
-          };
-          reader.onerror = () => {
-            failedMediaArchiveUrls.add(url);
-            resolve('');
-          };
-          reader.readAsDataURL(blob);
-        });
-      })
-      .catch(() => {
+          }
+        );
+      } catch (_) {
         failedMediaArchiveUrls.add(url);
-        return '';
-      })
-      .finally(() => {
-        inFlightMediaArchive.delete(url);
-      });
+        resolve('');
+      }
+    }).finally(() => {
+      inFlightMediaArchive.delete(url);
+    });
 
     inFlightMediaArchive.set(url, p);
     return p;
