@@ -24,6 +24,10 @@
   </p>
 
   <p>
+    ☕ <a href="#-ủng-hộ-tác-giả">Ủng hộ tác giả</a> / <a href="#-support-the-author">Support the author</a>
+  </p>
+
+  <p>
     <a href="#-tiếng-việt">🇻🇳 Tiếng Việt</a> •
     <a href="#-english">🇬🇧 English</a>
   </p>
@@ -108,6 +112,20 @@ File log chứa **nội dung các tin nhắn gần đây, tên người trong đ
 > ⚠️ Nhớ **che tên, avatar và nội dung tin nhắn riêng tư** trong ảnh chụp và tệp log trước khi đăng lên issue.
 >
 > 💡 Trước khi báo lỗi, hãy thử **F5 lại tab Facebook**: sau khi cài hoặc cập nhật extension, các tab đang mở sẵn sẽ không ghi nhận tin nhắn cho tới khi được tải lại.
+
+---
+
+### ☕ Ủng hộ tác giả
+
+Extension miễn phí và không có quảng cáo. Nếu thấy hữu ích, bạn có thể mời mình một ly cà phê để mình có thêm động lực duy trì và cập nhật mỗi khi Facebook thay đổi 🙏
+
+<p align="center">
+  <img src=".github/assets/donate-qr.png" alt="Mã QR ủng hộ binhake (MoMo / VietQR)" width="240" /><br/>
+  <sub>Quét bằng app <b>MoMo</b> hoặc bất kỳ app ngân hàng nào (VietQR / napas 247)</sub><br/><br/>
+  <a href="https://me.momo.vn/binhake"><img src="https://img.shields.io/badge/Ủng%20hộ%20qua-MoMo-ae2070?style=for-the-badge" alt="Ủng hộ qua MoMo" /></a>
+</p>
+
+Không tiện ủng hộ thì cho repo 1 ⭐ cũng là động lực lớn rồi!
 
 ---
 
@@ -198,6 +216,20 @@ The log contains **recent message content, names of people in the chat, your Fac
 > ⚠️ Please **blur names, avatars and private message content** in screenshots and logs before posting.
 >
 > 💡 Before reporting, try **refreshing the Facebook tab**: after installing or updating the extension, already-open tabs won't capture messages until they are reloaded.
+
+---
+
+### ☕ Support the author
+
+This extension is free and ad-free. If it helps you, consider buying me a coffee so I can keep it working whenever Facebook changes things 🙏
+
+<p align="center">
+  <img src=".github/assets/donate-qr.png" alt="binhake donation QR code (MoMo / VietQR)" width="240" /><br/>
+  <sub>Scan with <b>MoMo</b> or any Vietnamese banking app (VietQR / napas 247)</sub><br/><br/>
+  <a href="https://me.momo.vn/binhake"><img src="https://img.shields.io/badge/Donate%20via-MoMo-ae2070?style=for-the-badge" alt="Donate via MoMo" /></a>
+</p>
+
+A ⭐ on the repo helps a lot too!
 
 ---
 

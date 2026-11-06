@@ -25,6 +25,8 @@
   --overlay: rgba(0, 0, 0, 0.85);
   --toast-bg: #1c1e21;
   --modal-overlay: rgba(244, 244, 244, 0.8);
+  --momo: #ae2070;
+  --momo-soft: #fdeef5;
   color-scheme: light;
 }
 
@@ -47,6 +49,8 @@
     --shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
     --toast-bg: #4e4f50;
     --modal-overlay: rgba(0, 0, 0, 0.6);
+    --momo: #f06ab0;
+    --momo-soft: #45233a;
     color-scheme: dark;
   }
 }
@@ -1385,6 +1389,82 @@ button {
 .btn-danger {
   background: var(--danger);
   color: #ffffff;
+}
+
+/* ===== Ủng hộ tác giả ===== */
+.donate-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px 2px 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--momo-soft);
+  color: var(--momo);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  transition: border-color 0.15s;
+}
+
+.donate-btn .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.donate-btn:hover {
+  border-color: var(--momo);
+}
+
+.donate-card {
+  position: relative;
+}
+
+.donate-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+}
+
+.donate-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.donate-card .modal-title {
+  padding: 0 24px;
+}
+
+/* QR luôn nền trắng để quét được cả ở chế độ tối */
+.donate-qr {
+  width: 200px;
+  height: 200px;
+  margin-top: 8px;
+  padding: 6px;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+}
+
+.donate-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.btn-momo {
+  display: grid;
+  place-items: center;
+  background: #ae2070;
+  color: #ffffff;
+  text-decoration: none;
 }
 
 /* ===== Animation ===== */

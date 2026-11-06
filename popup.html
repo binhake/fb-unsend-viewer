@@ -27,7 +27,8 @@
     <symbol id="i-reply" viewBox="0 0 24 24"><path d="M5 5v6a4 4 0 0 0 4 4h10"/><path d="m15 11 4 4-4 4"/></symbol>
     <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.5v.01"/></symbol>
     <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/></symbol>
-    <symbol id="i-bell-off" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/><path d="M3.5 3.5l17 17"/></symbol>
+    <symbol id="i-coffee" viewBox="0 0 24 24"><path d="M5 9h11v5a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5z"/><path d="M16 10h1.5a2.5 2.5 0 0 1 0 5H16"/><path d="M9 3.5v2.5"/><path d="M12.5 3.5v2.5"/></symbol>
+    <symbol id="i-bell-off"viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/><path d="M3.5 3.5l17 17"/></symbol>
     <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M3.5 13.5h4.5l1.5 2.5h5l1.5-2.5h4.5"/><path d="M6.2 5h11.6l2.7 8.5V19a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1v-5.5z"/></symbol>
     <symbol id="i-bug" viewBox="0 0 24 24"><rect x="8" y="9" width="8" height="10" rx="4"/><path d="M10 9V7a2 2 0 1 1 4 0v2"/><path d="M12 13v6"/><path d="M4 13h4"/><path d="M16 13h4"/><path d="m5 8 3.2 2.2"/><path d="m19 8-3.2 2.2"/><path d="m5 19 3.2-2.2"/><path d="m19 19-3.2-2.2"/></symbol>
     <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M5 20h14"/></symbol>
@@ -148,6 +149,10 @@
     <!-- ===== Footer ===== -->
     <footer class="app-footer">
       <!-- <span id="footer-info">Lưu tạm 0 tin để đối chiếu</span> -->
+      <button type="button" id="donate-btn" class="donate-btn" title="Ủng hộ tác giả qua MoMo / VietQR">
+        <svg class="icon"><use href="#i-coffee"/></svg>
+        <span>Ủng hộ</span>
+      </button>
       <span class="footer-meta">
         <a id="author-credit" class="author-credit" href="https://github.com/binhake/fb-unsend-viewer" target="_blank" rel="noopener noreferrer" title="Bản quyền thuộc về binhake — Nhấn để mở GitHub gốc">© binhake</a>
         <span class="footer-sep" aria-hidden="true">•</span>
@@ -189,6 +194,22 @@
         <div class="modal-actions">
           <button type="button" id="confirm-cancel" class="btn">Hủy</button>
           <button type="button" id="confirm-ok" class="btn btn-danger">Xóa tất cả</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Hộp thoại ủng hộ tác giả ===== -->
+    <div id="donate-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="donate-title" hidden>
+      <div class="modal-card donate-card">
+        <button type="button" id="donate-close" class="donate-close" title="Đóng (Esc)" aria-label="Đóng">
+          <svg class="icon"><use href="#i-x"/></svg>
+        </button>
+        <h2 id="donate-title" class="modal-title">Mời mình một ly cà phê ☕</h2>
+        <p class="modal-desc">Extension miễn phí, không quảng cáo. Nếu thấy hữu ích, bạn có thể ủng hộ để mình có thêm động lực duy trì nhé!</p>
+        <img class="donate-qr" src="icons/donate-qr.png" alt="Mã QR chuyển khoản ủng hộ binhake" width="200" height="200">
+        <p class="donate-hint">Quét bằng MoMo hoặc app ngân hàng bất kỳ</p>
+        <div class="modal-actions">
+          <a id="donate-momo" class="btn btn-momo" href="https://me.momo.vn/binhake" target="_blank" rel="noopener noreferrer">Mở MoMo</a>
         </div>
       </div>
     </div>

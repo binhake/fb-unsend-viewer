@@ -59,6 +59,10 @@ function cacheDom() {
   dom.confirmCancel = document.getElementById('confirm-cancel');
   dom.confirmOk = document.getElementById('confirm-ok');
 
+  dom.donateBtn = document.getElementById('donate-btn');
+  dom.donateModal = document.getElementById('donate-modal');
+  dom.donateClose = document.getElementById('donate-close');
+
   dom.footerInfo = document.getElementById('footer-info');
   dom.versionTag = document.getElementById('version-tag');
   dom.debugBtn = document.getElementById('debug-btn');
@@ -1718,6 +1722,17 @@ function openConfirmModal(mode = 'all') {
   dom.confirmCancel.focus();
 }
 
+// ── Hộp thoại ủng hộ tác giả ──
+function openDonateModal() {
+  dom.donateModal.hidden = false;
+  dom.donateClose.focus();
+}
+
+function closeDonateModal() {
+  dom.donateModal.hidden = true;
+  dom.donateBtn.focus();
+}
+
 function closeConfirmModal() {
   dom.confirmModal.hidden = true;
   if (appState.confirmMode === 'media' && dom.clearMediaBtn && !dom.clearMediaBtn.disabled) {
@@ -1886,6 +1901,14 @@ function bindEvents() {
     }
   });
 
+  dom.donateBtn.addEventListener('click', openDonateModal);
+  dom.donateClose.addEventListener('click', closeDonateModal);
+  dom.donateModal.addEventListener('click', function (e) {
+    if (e.target === dom.donateModal) {
+      closeDonateModal();
+    }
+  });
+
   dom.toastToggle.addEventListener('change', function () {
     const enabled = dom.toastToggle.checked;
     chrome.storage.local.set({ [STORAGE_KEY_TOAST_ENABLED]: enabled }, function () {
@@ -1905,6 +1928,9 @@ function bindEvents() {
     if (!dom.confirmModal.hidden) {
       e.preventDefault();
       closeConfirmModal();
+    } else if (!dom.donateModal.hidden) {
+      e.preventDefault();
+      closeDonateModal();
     } else if (!dom.lightbox.hidden) {
       e.preventDefault();
       closeLightbox();
