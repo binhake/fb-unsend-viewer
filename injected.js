@@ -716,6 +716,13 @@
         typeof dbMod.getLSDatabaseSingletonPromiseOrValue === 'function'
           ? await dbMod.getLSDatabaseSingletonPromiseOrValue()
           : await dbMod.LSDatabaseSingleton;
+      if (rawDb?.tables && typeof rawDb.tables === 'object') {
+        for (const tName of Object.keys(rawDb.tables)) {
+          if (/message|edit/i.test(tName) && rawDb.tables[tName]) {
+            wrapReStoreTable(rawDb.tables[tName], tName);
+          }
+        }
+      }
       const contactsTable = rawDb?.tables?.contacts || rawDb?.contacts;
       if (!contactsTable || typeof reqlMod.toArrayAsync !== 'function') return;
       lsContactsSynced = true;
@@ -988,15 +995,16 @@
     let lastEditAt = existing?.lastEditAt || 0;
 
     if (cleanText && !isPlaceholderLikeText(cleanText) && !isAttachmentOrSnippetSource) {
-      if (isEditHistoryTableSource) {
-        if (!nextEditHistory.includes(cleanText)) {
-          if (nextEditHistory.length > 0) {
-            nextEditHistory.splice(nextEditHistory.length - 1, 0, cleanText);
-          } else {
-            nextEditHistory.push(cleanText);
-          }
-          lastEditAt = Date.now();
-        }
+      if (
+        isEditHistoryTableSource &&
+        nextEditHistory.length === 1 &&
+        !nextEditHistory.includes(cleanText) &&
+        timestamp &&
+        existing?.timestamp &&
+        timestamp < existing.timestamp
+      ) {
+        nextEditHistory.unshift(cleanText);
+        lastEditAt = Date.now();
       } else if (nextEditHistory.length === 0) {
         nextEditHistory.push(cleanText);
         lastEditAt = Date.now();
@@ -1526,10 +1534,26 @@
     if (msgIds.length > 0) {
       const primaryId = msgIds[0];
       const resolvedId = resolveCanonicalMessageId(primaryId);
+      if (altIds.length > 0 && /ReplaceOptimistic|InsertMessage|UpsertMessage|Edit|Update/i.test(moduleName)) {
+        for (const aId of altIds) {
+          if (aId && aId !== resolvedId) {
+            aliasIdMap.set(aId, resolvedId);
+            if (capturedMessages.has(aId)) {
+              const optRec = capturedMessages.get(aId);
+              capturedMessages.delete(aId);
+              if (!capturedMessages.has(resolvedId)) {
+                optRec.messageId = resolvedId;
+                capturedMessages.set(resolvedId, optRec);
+                emitToContentScript('FB_MSG_CAPTURED', optRec);
+              }
+            }
+          }
+        }
+      }
       const savedMeta = messageMetaMap.get(resolvedId);
       const existingRec = capturedMessages.get(resolvedId);
       const isEditModule =
-        /EditMessage|ReplaceMessageText|UpdateMessage|MessageEditHistory/i.test(moduleName);
+        /Edit|ReplaceMessage|UpdateMessage|OverwriteMessage|MessageEditHistory/i.test(moduleName);
       const rawBestTimestamp = timestamps.length > 0 ? Math.min(...timestamps) : null;
       const bestTimestamp =
         rawBestTimestamp ||
@@ -1770,7 +1794,7 @@
   }
 
   const SAFE_TARGET_MODULE_REGEX =
-    /^(LS(UpsertMessage|DeleteThenInsertMessage|InsertMessage|ReplaceOptimisticMessage|EditMessage|ReplaceMessageText|UpdateMessageText|InsertMessageEditHistory|UpsertMessageEditHistory|DeleteMessage|DeleteMessageRequest|MarkMessageUnsent|HandleUnsendMessage|UpdateMessage|InsertBlobAttachment|InsertAttachment|InsertXmaAttachment|InsertStickerAttachment|VerifyContactRowExists|UpdateOrInsertContact|UpsertContact|UpdateOrInsertThread|VerifyHybridThreadExists|UpsertThread)|MAW(UnvaultTransform|Vault|ThreadSnippetFor.*Msg|BridgeBuildThreadSnippet|BridgeBuildMsg|BridgeMsg|BridgeEditMsg|BridgeUpdateMsg|EditMessage|BridgeNewMsgHandler|BridgeNewMediaHandler)|Mps(RavenToBridge|MessageToBridge|MessageTextToBridge|EditMessageToBridge|EditToBridge|MediaToBridge|RevokeMessageToBridgeMsg|XmaToBridge|NoteReplyToBridge))$/i;
+    /^(LS(UpsertMessage|DeleteThenInsertMessage|InsertMessage|ReplaceOptimisticMessage|.*Edit.*|.*MessageEditHistory.*|.*ReplaceMessage.*|.*Update.*Message.*|.*Overwrite.*Message.*|DeleteMessage|DeleteMessageRequest|MarkMessageUnsent|HandleUnsendMessage|InsertBlobAttachment|InsertAttachment|InsertXmaAttachment|InsertStickerAttachment|VerifyContactRowExists|UpdateOrInsertContact|UpsertContact|UpdateOrInsertThread|VerifyHybridThreadExists|UpsertThread)|MAW(UnvaultTransform|Vault|ThreadSnippetFor.*Msg|BridgeBuildThreadSnippet|BridgeBuildMsg|BridgeMsg|.*Edit.*|.*Update.*Msg.*|BridgeNewMsgHandler|BridgeNewMediaHandler)|Mps(RavenToBridge|MessageToBridge|MessageTextToBridge|.*Edit.*ToBridge.*|MediaToBridge|RevokeMessageToBridgeMsg|XmaToBridge|NoteReplyToBridge))$/i;
 
   const PASSIVE_EXPORT_CAPTURE_REGEX =
     /^(Mps(OverBridge|RavenToBridge|MediaToBridge|MessageToBridge|MessageTextToBridge|RevokeMessageToBridgeMsg|MessageToBridgeWrapper|MessageToLoadResponse|ToBridgeMessageId|Types|LoadMessagesStep|ReactionSupplementals)|MAW(Vault|UnvaultTransform|ProtobufDeserializers|AttachmentBlob\.react|GetAttachmentThumbnailBlob|DbMedia|MediaDownloadStatusBackendFetcher|DownloadMediaInWorker|DownloadMediaInWorkerDeferred|BridgeNewMsgHandler|BridgeNewMediaHandler|BridgeBuildMsg|BridgeSendAndReceive|MediaManagerUtils|MediaUtils)|WAMediaTransport\.pb|WAArmadilloApplication\.pb|WAConsumerApplication\.pb|WAHashUtils|WAByteArray|decodeProtobuf|LSDatabaseSingleton|ReQL)$/i;
@@ -2654,11 +2678,27 @@
             currentFunc
           );
         const isExplicitInsertMsgFunc =
-          /^(insertMessage|upsertMessage|deleteThenInsertMessage|replaceOptimisticMessage|editMessage|replaceMessageText|updateMessageText|insertMessageEditHistory|MAWThreadSnippetForTextMsg)$/i.test(
+          /^(insertMessage|upsertMessage|deleteThenInsertMessage|replaceOptimisticMessage|.*edit.*|.*replaceMessage.*|.*update.*Message.*|.*MessageEditHistory.*|MAWThreadSnippetForTextMsg)$/i.test(
             currentFunc
           );
 
         const resolvedId = resolveCanonicalMessageId(primaryId);
+        if (directAltIds.length > 0 && /replaceOptimistic|insertMessage|upsertMessage|edit|update/i.test(currentFunc)) {
+          for (const aId of directAltIds) {
+            if (aId && aId !== resolvedId) {
+              aliasIdMap.set(aId, resolvedId);
+              if (capturedMessages.has(aId)) {
+                const optRec = capturedMessages.get(aId);
+                capturedMessages.delete(aId);
+                if (!capturedMessages.has(resolvedId)) {
+                  optRec.messageId = resolvedId;
+                  capturedMessages.set(resolvedId, optRec);
+                  emitToContentScript('FB_MSG_CAPTURED', optRec);
+                }
+              }
+            }
+          }
+        }
 
         if (hasUnsendNoticeInNode || isExplicitUnsendFunc) {
           triggerMessageUnsent(resolvedId, {
@@ -2672,7 +2712,7 @@
         ) {
           const existingInMap = capturedMessages.get(resolvedId);
           const isEditLikeStep =
-            /^(upsertMessage|deleteThenInsertMessage|replaceOptimisticMessage|editMessage|replaceMessageText|updateMessageText|insertMessageEditHistory)$/i.test(
+            /^(upsertMessage|deleteThenInsertMessage|replaceOptimisticMessage|.*edit.*|.*replaceMessage.*|.*update.*Message.*|.*MessageEditHistory.*)$/i.test(
               currentFunc
             );
           const effectiveTs =
@@ -2734,8 +2774,12 @@
     }
 
     try {
-      if (obj.tables && typeof obj.tables === 'object' && obj.tables.messages) {
-        wrapReStoreTable(obj.tables.messages, 'messages');
+      if (obj.tables && typeof obj.tables === 'object') {
+        for (const tName of Object.keys(obj.tables)) {
+          if (/message|edit/i.test(tName) && obj.tables[tName]) {
+            wrapReStoreTable(obj.tables[tName], tName);
+          }
+        }
       }
 
       if (Array.isArray(obj.step)) {
@@ -2767,20 +2811,32 @@
         const msgId = unvaultString(String(rawMsgId)).trim();
         if (msgId.length >= 4) {
           let timestamp = null;
-          if (typeof obj.timestampMs === 'number') {
-            timestamp = obj.timestampMs;
-          } else if (Array.isArray(obj.timestampMs)) {
-            const parsedTs = parseLSInt64(obj.timestampMs);
-            if (parsedTs) timestamp = Number(parsedTs);
-          } else if (typeof obj.sortOrderMs === 'number') {
-            timestamp = obj.sortOrderMs;
-          } else if (Array.isArray(obj.sortOrderMs)) {
-            const parsedSort = parseLSInt64(obj.sortOrderMs);
-            if (parsedSort) timestamp = Number(parsedSort);
-          } else if (typeof obj.timestamp === 'number') {
-            timestamp = obj.timestamp;
-          } else if (typeof obj.ts === 'number') {
-            timestamp = obj.ts < 10000000000 ? obj.ts * 1000 : obj.ts;
+          const tsFieldCandidates = [
+            obj.timestampMs,
+            obj.timestamp_ms,
+            obj.editTimestampMs,
+            obj.edit_timestamp_ms,
+            obj.sortOrderMs,
+            obj.sort_order_ms
+          ];
+          for (const tsCand of tsFieldCandidates) {
+            if (typeof tsCand === 'number' && tsCand > 0) {
+              timestamp = tsCand;
+              break;
+            } else if (Array.isArray(tsCand)) {
+              const parsedTs = parseLSInt64(tsCand);
+              if (parsedTs && Number(parsedTs) > 0) {
+                timestamp = Number(parsedTs);
+                break;
+              }
+            }
+          }
+          if (!timestamp) {
+            if (typeof obj.timestamp === 'number') {
+              timestamp = obj.timestamp;
+            } else if (typeof obj.ts === 'number') {
+              timestamp = obj.ts < 10000000000 ? obj.ts * 1000 : obj.ts;
+            }
           }
 
           const altIds = [
@@ -2909,9 +2965,22 @@
             }
 
             if (cleanText || attachments.length > 0) {
-              const isBridgeSource =
-                typeof context.source === 'string' && context.source.startsWith('MpsBridge:');
-              if (!timestamp || (!isBridgeSource && isOldHistoricalTimestamp(timestamp))) return;
+              const isBridgeOrReStore =
+                typeof context.source === 'string' &&
+                (context.source.startsWith('MpsBridge:') || context.source.startsWith('ReStore:'));
+              const resolvedExisting = capturedMessages.get(resolveCanonicalMessageId(msgId));
+              const effectiveTimestamp =
+                timestamp ||
+                resolvedExisting?.timestamp ||
+                (isBridgeOrReStore ? Date.now() : null);
+              if (
+                !effectiveTimestamp ||
+                (!isBridgeOrReStore &&
+                  !resolvedExisting &&
+                  isOldHistoricalTimestamp(effectiveTimestamp))
+              ) {
+                return;
+              }
               registerCapturedMessage({
                 messageId: msgId,
                 altIds,
@@ -2921,9 +2990,9 @@
                 senderName,
                 isSelf,
                 attachments,
-                timestamp,
+                timestamp: effectiveTimestamp,
                 source: context.source,
-                allowHistoricalCapture: isBridgeSource
+                allowHistoricalCapture: Boolean(isBridgeOrReStore || resolvedExisting)
               });
             }
           }
