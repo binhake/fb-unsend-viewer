@@ -451,7 +451,7 @@ function updateThreadOptions() {
     appState.threadFilter = 'ALL';
   }
 
-  dom.footerInfo.textContent = `Lưu tạm ${appState.capturedMessages.length.toLocaleString('vi-VN')} tin để đối chiếu`;
+  // dom.footerInfo.textContent = `Lưu tạm ${appState.capturedMessages.length.toLocaleString('vi-VN')} tin để đối chiếu`;
 }
 
 // Số đếm trên tab tính theo đoạn chat + từ khóa đang chọn
@@ -1033,7 +1033,7 @@ function loadPopupData(isBackgroundUpdate = false) {
     // Chưa từng lưu thì coi như đang bật
     dom.toastToggle.checked = res[STORAGE_KEY_TOAST_ENABLED] !== false;
     if (isBackgroundUpdate && appState.lastRenderSignature) {
-      dom.footerInfo.textContent = `Lưu tạm ${appState.capturedMessages.length.toLocaleString('vi-VN')} tin để đối chiếu`;
+      // dom.footerInfo.textContent = `Lưu tạm ${appState.capturedMessages.length.toLocaleString('vi-VN')} tin để đối chiếu`;
       if (computeUnsentRenderSignature() === appState.lastRenderSignature) {
         return;
       }

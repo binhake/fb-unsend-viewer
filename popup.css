@@ -1030,6 +1030,7 @@ button {
   z-index: 50;
   display: flex;
   align-items: center;
+  margin-left: auto;
   gap: 8px;
   width: fit-content;
   margin: 0 auto;
