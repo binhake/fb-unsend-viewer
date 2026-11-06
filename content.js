@@ -214,7 +214,13 @@
     /(đã xóa một tin nhắn|đã xoá một tin nhắn|bạn đã xóa một tin nhắn|bạn đã xoá một tin nhắn|đã thu hồi một tin nhắn|bạn đã thu hồi một tin nhắn|đã gỡ một tin nhắn|bạn đã gỡ một tin nhắn|tin nhắn đã bị thu hồi|tin nhắn đã được thu hồi|tin nhắn đã bị xóa|unsent a message|you unsent a message|deleted a message|you deleted a message|removed a message|message was unsent)/i;
 
   const UI_IGNORE_REGEX =
-    /^(Đã gửi|Đã nhận|Đã xem|Đang gửi|Đang viết|Đang hoạt động|Hoạt động\s+.+\s+trước|Active now|Active\s+.+\s+ago|Sent|Delivered|Seen|Sending|Typing|Enter|Nhấn Enter để gửi|Được mã hóa đầu cuối|End-to-end encrypted|Trả lời|Reply|Chuyển tiếp|Forward|Xem thêm|See more|Bạn đã chuyển tiếp một tin nhắn|\d{1,2}:\d{2}(\s?[AP]M)?(\s+T\d|\s+CN)?)$/i;
+    /^(Đã gửi|Đã nhận|Đã xem|Đang gửi|Đang viết|Đang hoạt động|Hoạt động\s+.+\s+trước|Active now|Active\s+.+\s+ago|Sent|Delivered|Seen|Sending|Typing|Enter|Nhấn Enter để gửi|Được mã hóa đầu cuối|End-to-end encrypted|Trả lời|Reply|Chuyển tiếp|Forward|Xem thêm|See more|Đã chỉnh sửa|Xem bản chỉnh sửa|Ẩn bản chỉnh sửa|Xem lịch sử chỉnh sửa|Ẩn lịch sử chỉnh sửa|Edited|View edit history|Hide edit history|Bạn đã chuyển tiếp một tin nhắn|\d{1,2}:\d{2}(\s?[AP]M)?(\s+T\d|\s+CN)?)$/i;
+
+  const EDIT_ROW_LABEL_REGEX =
+    /^(Đã chỉnh sửa|Xem bản chỉnh sửa|Ẩn bản chỉnh sửa|Xem lịch sử chỉnh sửa|Ẩn lịch sử chỉnh sửa|Edited|View edit history|Hide edit history)$/i;
+
+  const EXPANDED_EDIT_HISTORY_REGEX =
+    /^(Ẩn lịch sử chỉnh sửa|Ẩn bản chỉnh sửa|Hide edit history)$/i;
 
   const UNSUPPORTED_ATTACHMENT_REGEX =
     /(File đính kèm không được hỗ trợ|Tin nhắn này không hiển thị trên ứng dụng này|Unsupported attachment|This message isn't available on this app|Chỉ có thể xem trên ứng dụng di động|chỉ có thể xem được 1 lần|chỉ có thể xem được một lần|Hãy xem trên ứng dụng di động|only be viewed once|View it on the mobile app|View once photo|View once video|Ảnh xem một lần|Video xem một lần|Tin nhắn ảnh xem 1 lần|Tin nhắn video xem 1 lần|Hãy dùng ứng dụng Messenger trên di động để xem)/i;
@@ -793,6 +799,85 @@
     return trimmed;
   }
 
+  function isValidEditHistoryEntry(text) {
+    if (!text || typeof text !== 'string') return false;
+    const clean = normalizeUnsupportedAttachmentText(text).trim();
+    if (!clean) return false;
+    if (
+      UNSEND_REGEX.test(clean) ||
+      UI_IGNORE_REGEX.test(clean) ||
+      EDIT_ROW_LABEL_REGEX.test(clean)
+    ) {
+      return false;
+    }
+    if (isAttachmentFilenameText(clean)) return false;
+    if (/^(⚠️|①|🎬\s*\[Video\])/i.test(clean)) return false;
+    return true;
+  }
+
+  function sanitizeEditHistoryList(rawHistory, fallbackText = '') {
+    const out = [];
+    const pushItem = (val) => {
+      if (typeof val !== 'string') return;
+      const clean = normalizeUnsupportedAttachmentText(val).trim();
+      if (!isValidEditHistoryEntry(clean)) return;
+      if (out.length === 0 || out[out.length - 1] !== clean) {
+        out.push(clean);
+      }
+    };
+    if (Array.isArray(rawHistory)) {
+      for (const item of rawHistory) {
+        pushItem(typeof item === 'object' && item !== null ? item.text : item);
+      }
+    }
+    if (fallbackText) {
+      const cleanFallback = normalizeUnsupportedAttachmentText(fallbackText).trim();
+      if (
+        isValidEditHistoryEntry(cleanFallback) &&
+        (out.length === 0 || !out.includes(cleanFallback))
+      ) {
+        out.push(cleanFallback);
+      }
+    }
+    return out;
+  }
+
+  function mergeEditHistoryLists(existingRec, incomingRec) {
+    const existingList = sanitizeEditHistoryList(existingRec?.editHistory, existingRec?.text);
+    const incomingList = sanitizeEditHistoryList(incomingRec?.editHistory, incomingRec?.text);
+    if (existingList.length === 0) return incomingList;
+    if (incomingList.length === 0) return existingList;
+
+    if (incomingList.length > existingList.length) {
+      let matchIdx = 0;
+      for (const item of incomingList) {
+        if (item === existingList[matchIdx]) {
+          matchIdx++;
+          if (matchIdx === existingList.length) break;
+        }
+      }
+      if (matchIdx === existingList.length) {
+        return incomingList;
+      }
+    }
+
+    const merged = [...existingList];
+    const lastEditAt = existingRec?.lastEditAt || existingRec?.updatedAt || 0;
+    for (const item of incomingList) {
+      if (merged[merged.length - 1] === item) continue;
+      if (!merged.includes(item)) {
+        merged.push(item);
+      } else if (
+        incomingList.length === 1 &&
+        Date.now() - lastEditAt > 1500 &&
+        Boolean(incomingRec?.isLiveEdit)
+      ) {
+        merged.push(item);
+      }
+    }
+    return merged;
+  }
+
   function sanitizeStoredRecord(msg) {
     if (!msg || typeof msg !== 'object') return msg;
     const base = stripDomReferences(msg);
@@ -825,7 +910,12 @@
         cleanAttachments.unshift(mpdUrl);
       }
     }
-    const normalizedBaseText = normalizeUnsupportedAttachmentText(base.text || '');
+    const cleanEditHistory = sanitizeEditHistoryList(base.editHistory, base.text);
+    const latestFromHistory =
+      cleanEditHistory.length > 0 ? cleanEditHistory[cleanEditHistory.length - 1] : '';
+    const normalizedBaseText = normalizeUnsupportedAttachmentText(
+      latestFromHistory || base.text || ''
+    );
     const cleanText =
       normalizedBaseText && isAttachmentFilenameText(normalizedBaseText) && cleanAttachments.length > 0
         ? ''
@@ -849,6 +939,7 @@
     return {
       ...base,
       text: cleanText,
+      editHistory: cleanEditHistory,
       isSelf: inferredSelf,
       senderId: finalSenderId,
       threadId: finalThreadId,
@@ -1547,12 +1638,15 @@
         ? Math.min(existing.timestamp, msg.timestamp)
         : existing?.timestamp || msg.timestamp || getMonotonicTimestamp();
 
+    const mergedEditHistory = mergeEditHistoryLists(existing, msg);
+    const latestHistoryText =
+      mergedEditHistory.length > 0 ? mergedEditHistory[mergedEditHistory.length - 1] : '';
     const normalizedMsgText = normalizeUnsupportedAttachmentText(msg.text || '');
     const normalizedExistingText = normalizeUnsupportedAttachmentText(existing?.text || '');
     const rawMergedText =
-      normalizedMsgText && normalizedMsgText.startsWith('⚠️ ')
+      normalizedMsgText && normalizedMsgText.startsWith('⚠️ ') && !latestHistoryText
         ? normalizedMsgText
-        : normalizedExistingText || normalizedMsgText || '';
+        : latestHistoryText || normalizedMsgText || normalizedExistingText || '';
     const cleanMergedText =
       rawMergedText && isAttachmentFilenameText(rawMergedText) && combinedAttachments.length > 0
         ? ''
@@ -1570,6 +1664,7 @@
       bestThread
     );
 
+    const historyGrew = mergedEditHistory.length > (existing?.editHistory?.length || 0);
     const merged = stripDomReferences({
       ...existing,
       ...msg,
@@ -1578,6 +1673,10 @@
       senderId: resolvedSenderId,
       threadId: resolvedThreadId,
       text: cleanMergedText,
+      editHistory: mergedEditHistory,
+      lastEditAt: historyGrew
+        ? Date.now()
+        : msg.lastEditAt || existing?.lastEditAt || 0,
       attachments: combinedAttachments,
       personName: resolvedPerson,
       threadName: bestThread,
@@ -1593,7 +1692,8 @@
       updatedAt: Date.now()
     });
 
-    const isBrandNew = !existing || (!existing.text && merged.text);
+    const isBrandNew =
+      !existing || (!existing.text && merged.text) || historyGrew || existing.text !== merged.text;
 
     if (existing && existing.messageId && existing.messageId !== bestId) {
       messagesById.delete(existing.messageId);
@@ -1703,11 +1803,14 @@
           ? Math.min(existingItem.timestamp, newRecord.timestamp)
           : existingItem.timestamp || newRecord.timestamp || getMonotonicTimestamp();
 
+      const mergedEditHistory = mergeEditHistoryLists(existingItem, newRecord);
+      const latestHistoryText =
+        mergedEditHistory.length > 0 ? mergedEditHistory[mergedEditHistory.length - 1] : '';
       const normalizedExistingItemText = normalizeUnsupportedAttachmentText(existingItem.text || '');
       const rawMergedText =
-        cleanText && cleanText.startsWith('⚠️ ')
+        cleanText && cleanText.startsWith('⚠️ ') && !latestHistoryText
           ? cleanText
-          : cleanText || normalizedExistingItemText || '';
+          : latestHistoryText || cleanText || normalizedExistingItemText || '';
       const finalMergedText =
         rawMergedText && isAttachmentFilenameText(rawMergedText) && mergedAttachments.length > 0
           ? ''
@@ -1737,6 +1840,7 @@
         senderId: resolvedSenderId,
         threadId: resolvedThreadId,
         text: finalMergedText,
+        editHistory: mergedEditHistory,
         attachments: mergedAttachments,
         personName: bestPerson,
         threadName: bestThread,
@@ -1795,9 +1899,14 @@
       newRecord.threadName
     );
 
+    const cleanEditHistory = sanitizeEditHistoryList(newRecord.editHistory, finalCleanText);
+    const finalTextFromHistory =
+      cleanEditHistory.length > 0 ? cleanEditHistory[cleanEditHistory.length - 1] : finalCleanText;
+
     const finalRecord = stripDomReferences({
       ...newRecord,
-      text: finalCleanText,
+      text: finalTextFromHistory,
+      editHistory: cleanEditHistory,
       isSelf: recIsSelf,
       senderId: finalSenderId,
       threadId: finalThreadId,
@@ -1858,7 +1967,12 @@
         ) || null;
     }
 
-    const originalText = existing?.text || unsentData.text || '';
+    const mergedEditHistory = mergeEditHistoryLists(existing, unsentData);
+    const originalText =
+      (mergedEditHistory.length > 0 ? mergedEditHistory[mergedEditHistory.length - 1] : '') ||
+      existing?.text ||
+      unsentData.text ||
+      '';
     const originalAttachments = sanitizeAttachmentsList([
       ...(existing?.attachments || []),
       ...(unsentData.attachments || [])
@@ -1917,6 +2031,7 @@
       messageId: unsentData.messageId,
       isSelf,
       text: originalText,
+      editHistory: mergedEditHistory,
       attachments: originalAttachments,
       senderId: existing?.senderId || unsentData.senderId || '',
       threadId: existing?.threadId || unsentData.threadId || '',
@@ -2572,15 +2687,47 @@
       return out;
     };
 
+    let isEditedRow = false;
+    let hasExpandedEditHistory = false;
+    for (const el of allElements) {
+      if (
+        el.closest(
+          'h3, h4, h5, h6, .fb-unsend-community-restored-list, .fb-unsend-edit-history-wrap'
+        )
+      ) {
+        continue;
+      }
+      if (el.childElementCount === 0) {
+        const t = (el.textContent || '').trim();
+        if (t && t.length <= 60 && EDIT_ROW_LABEL_REGEX.test(t)) {
+          isEditedRow = true;
+          if (EXPANDED_EDIT_HISTORY_REGEX.test(t)) {
+            hasExpandedEditHistory = true;
+          }
+        }
+      }
+    }
+
     const texts = [];
     const textNodes = rowEl.querySelectorAll('div[dir="auto"]');
     textNodes.forEach((el) => {
-      if (el.closest('h3, h4, h5, h6, .fb-unsend-community-restored-list')) return;
+      if (
+        el.closest(
+          'h3, h4, h5, h6, .fb-unsend-community-restored-list, .fb-unsend-edit-history-wrap'
+        )
+      ) {
+        return;
+      }
+      if (el.parentElement?.closest('div[dir="auto"]')) return;
 
       const t = extractNodeTextWithEmoji(el).trim();
       if (!t) return;
-      if (UNSEND_REGEX.test(t) || UI_IGNORE_REGEX.test(t)) return;
-      if (!texts.includes(t)) {
+      if (UNSEND_REGEX.test(t) || UI_IGNORE_REGEX.test(t) || EDIT_ROW_LABEL_REGEX.test(t)) return;
+      if (hasExpandedEditHistory) {
+        if (texts.length === 0 || texts[texts.length - 1] !== t) {
+          texts.push(t);
+        }
+      } else if (!texts.includes(t)) {
         texts.push(t);
       }
     });
@@ -2769,13 +2916,27 @@
       }
     }
 
+    const resolvedRowText =
+      hasExpandedEditHistory && texts.length > 1
+        ? texts[texts.length - 1].trim()
+        : texts.join('\n').trim();
+    const resolvedRowEditHistory =
+      hasExpandedEditHistory && texts.length > 1
+        ? texts.map((t) => t.trim()).filter(Boolean)
+        : resolvedRowText
+          ? [resolvedRowText]
+          : [];
+
     return {
       isUnsentRow: false,
       alreadyRestored: false,
+      isEditedRow,
+      hasExpandedEditHistory,
       isUnsupportedAttachmentRow,
       unsupportedCardEl,
       unsentNoticeEl: null,
-      text: texts.join('\n').trim(),
+      text: resolvedRowText,
+      editHistory: resolvedRowEditHistory,
       attachments: sanitizeAttachmentsList(attachments),
       rowSenderName,
       rowAvatarUrl,
@@ -3210,8 +3371,21 @@
         const prev = domRowMessages.get(rowEl);
         const fiberMsgId = getRowMessageId(rowEl);
 
+        const isSameFiberMsg =
+          Boolean(fiberMsgId && prev?.fiberMsgId) &&
+          (fiberMsgId === prev.fiberMsgId ||
+            areAuthoritativeIdsCompatible(fiberMsgId, prev.fiberMsgId, false));
+        const isEditedSameRow =
+          Boolean(prev) &&
+          (isSameFiberMsg || Boolean(analysis.isEditedRow)) &&
+          prev.isSelf === analysis.isSelf &&
+          (!analysis.rowSenderName ||
+            !prev.personName ||
+            isSamePersonName(analysis.rowSenderName, prev.personName, analysis.isSelf));
+
         const isRecycledNode =
           prev &&
+          !isEditedSameRow &&
           ((fiberMsgId && prev.fiberMsgId && fiberMsgId !== prev.fiberMsgId) ||
             (analysis.text && prev.text && analysis.text !== prev.text) ||
             (typeof prev.isSelf === 'boolean' && prev.isSelf !== analysis.isSelf) ||
@@ -3222,6 +3396,7 @@
         const safePrev = isRecycledNode ? null : prev;
         if (isRecycledNode) {
           delete rowEl.dataset.fbUnsendSavedText;
+          delete rowEl.dataset.fbUnsendSavedEditHistory;
           delete rowEl.dataset.fbUnsendSavedMedia;
           delete rowEl.dataset.fbUnsendSavedSender;
           delete rowEl.dataset.fbUnsendSavedMid;
@@ -3306,13 +3481,34 @@
           analysis.rowAvatarUrl || safePrev?.avatarUrl || existingById?.avatarUrl,
           threadName
         );
+        const prevOrStored = safePrev || existingById || null;
+        const isDomTextEdited = Boolean(
+          prevOrStored &&
+            analysis.text &&
+            prevOrStored.text &&
+            analysis.text !== prevOrStored.text
+        );
+        const recordEditHistory = mergeEditHistoryLists(prevOrStored, {
+          text: analysis.text,
+          editHistory: analysis.editHistory,
+          isLiveEdit: isDomTextEdited
+        });
+        const latestDomText =
+          recordEditHistory.length > 0
+            ? recordEditHistory[recordEditHistory.length - 1]
+            : analysis.text || safePrev?.text || '';
+
         const record = {
           messageId: msgId,
           fiberMsgId: fiberMsgId || safePrev?.fiberMsgId || '',
           isSelf: analysis.isSelf,
           senderId: resolvedSenderId,
           threadId: resolvedThreadId,
-          text: analysis.text || safePrev?.text || '',
+          text: latestDomText,
+          editHistory: recordEditHistory,
+          lastEditAt: isDomTextEdited
+            ? Date.now()
+            : safePrev?.lastEditAt || existingById?.lastEditAt || 0,
           attachments: cleanAttachments,
           personName,
           threadName: !isGenericSenderName(threadName) ? threadName : safePrev?.threadName || '',
@@ -3338,6 +3534,9 @@
         if (record.text) {
           rowEl.dataset.fbUnsendSavedText = record.text;
         }
+        if (recordEditHistory.length > 1) {
+          rowEl.dataset.fbUnsendSavedEditHistory = JSON.stringify(recordEditHistory);
+        }
         if (personName) {
           rowEl.dataset.fbUnsendSavedSender = personName;
         }
@@ -3358,6 +3557,9 @@
         const textUpgraded = Boolean(
           safePrev && record.text && record.text !== (safePrev.text || '')
         );
+        const editHistoryUpgraded = Boolean(
+          safePrev && recordEditHistory.length > (safePrev.editHistory?.length || 0)
+        );
         const attachmentsUpgraded =
           safePrev &&
           record.attachments.length > 0 &&
@@ -3372,13 +3574,15 @@
           existingById &&
             ((record.personName && !existingById.personName) ||
               (record.threadName && isGenericSenderName(existingById.threadName)) ||
-              (record.anchorAboveText && !existingById.anchorAboveText))
+              (record.anchorAboveText && !existingById.anchorAboveText) ||
+              recordEditHistory.length > (existingById.editHistory?.length || 0))
         );
 
         if (
           !safePrev ||
           idUpgraded ||
           textUpgraded ||
+          editHistoryUpgraded ||
           attachmentsUpgraded ||
           metaUpgraded ||
           storeNeedsEnrich
@@ -3536,18 +3740,24 @@
           const midConsistent =
             !fiberId || !savedMid || areAuthoritativeIdsCompatible(fiberId, savedMid, true);
           const savedText = rowEl.dataset?.fbUnsendSavedText;
+          const savedEditHistStr = rowEl.dataset?.fbUnsendSavedEditHistory;
           const savedMediaStr = rowEl.dataset?.fbUnsendSavedMedia;
           const savedSender = rowEl.dataset?.fbUnsendSavedSender || '';
 
           if (midConsistent && (savedText || savedMediaStr)) {
             let attachments = [];
+            let editHistory = [];
             try {
               if (savedMediaStr) attachments = JSON.parse(savedMediaStr);
+            } catch (_) {}
+            try {
+              if (savedEditHistStr) editHistory = JSON.parse(savedEditHistStr);
             } catch (_) {}
             const candidate = {
               messageId: fiberId || savedMid || `unsend_${getMonotonicTimestamp()}_${rowIndex}`,
               isSelf,
               text: savedText || '',
+              editHistory: sanitizeEditHistoryList(editHistory, savedText || ''),
               attachments: sanitizeAttachmentsList(attachments),
               personName: savedSender || rowSenderName || '',
               threadName,
@@ -3617,9 +3827,28 @@
             threadName,
             anchorAboveText
           });
+          let domSavedEditHistory = [];
+          try {
+            if (rowEl.dataset?.fbUnsendSavedEditHistory) {
+              domSavedEditHistory = JSON.parse(rowEl.dataset.fbUnsendSavedEditHistory);
+            }
+          } catch (_) {}
+          const memRowRec = domRowMessages.get(rowEl);
+          const mergedRestoredEditHistory = mergeEditHistoryLists(
+            mergeEditHistoryLists(restored, memRowRec),
+            {
+              text: rowEl.dataset?.fbUnsendSavedText || restored.text || '',
+              editHistory: domSavedEditHistory
+            }
+          );
           const cleanRestored = {
             ...restored,
             isSelf: typeof restored.isSelf === 'boolean' ? restored.isSelf : isSelf,
+            text:
+              mergedRestoredEditHistory.length > 0
+                ? mergedRestoredEditHistory[mergedRestoredEditHistory.length - 1]
+                : restored.text || '',
+            editHistory: mergedRestoredEditHistory,
             attachments: sanitizeAttachmentsList(restored.attachments)
           };
           if (!cleanRestored.text && cleanRestored.attachments.length === 0) return;
@@ -3663,7 +3892,8 @@
                 (bestPersonName && bestPersonName !== (restored.personName || '')) ||
                 (bestThreadName && bestThreadName !== (restored.threadName || '')) ||
                 (bestAnchor && !restored.anchorAboveText) ||
-                (cleanRestored.text && cleanRestored.text !== (restored.text || ''))
+                (cleanRestored.text && cleanRestored.text !== (restored.text || '')) ||
+                (cleanRestored.editHistory?.length || 0) > (restored.editHistory?.length || 0)
             );
             if (!needsHistoryEnrich) {
               return;
@@ -3677,6 +3907,7 @@
             senderId: bestSenderId,
             threadId: bestThreadId,
             text: cleanRestored.text || '',
+            editHistory: cleanRestored.editHistory || [],
             attachments: cleanRestored.attachments || [],
             personName: bestPersonName,
             threadName: bestThreadName,
@@ -4198,6 +4429,47 @@
     });
   }
 
+  function createDomEditHistoryElement(editHistory, isSelf = false) {
+    const wrap = document.createElement('div');
+    wrap.className = `fb-unsend-edit-history-wrap${isSelf ? ' is-self' : ''}`;
+    wrap.dataset.fbEditCount = String(editHistory.length);
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'fb-unsend-edit-toggle';
+    toggleBtn.textContent = 'Ẩn lịch sử chỉnh sửa';
+
+    const oldList = document.createElement('div');
+    oldList.className = 'fb-unsend-edit-list';
+
+    const olderItems = editHistory.slice(0, -1);
+    olderItems.forEach((verText) => {
+      const b = document.createElement('div');
+      b.className = 'fb-unsend-edit-bubble fb-unsend-edit-bubble-old';
+      b.textContent = verText;
+      oldList.appendChild(b);
+    });
+
+    const latestBubble = document.createElement('div');
+    latestBubble.className = 'fb-unsend-edit-bubble fb-unsend-edit-bubble-latest';
+    latestBubble.textContent = editHistory[editHistory.length - 1];
+
+    toggleBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const willHide = !oldList.hidden;
+      oldList.hidden = willHide;
+      toggleBtn.textContent = willHide
+        ? `Xem lịch sử chỉnh sửa (${olderItems.length})`
+        : 'Ẩn lịch sử chỉnh sửa';
+    });
+
+    wrap.appendChild(toggleBtn);
+    wrap.appendChild(oldList);
+    wrap.appendChild(latestBubble);
+    return wrap;
+  }
+
   function renderRestoredContentInDom(rowEl, noticeEl, data) {
     if (!noticeEl) return;
     const cleanAttachments = sanitizeAttachmentsList(data.attachments);
@@ -4206,9 +4478,23 @@
       normalizedText && !(isAttachmentFilenameText(normalizedText) && cleanAttachments.length > 0)
         ? normalizedText
         : '';
+    const editHistory = sanitizeEditHistoryList(data.editHistory, displayText);
+    const hasEditHistory = editHistory.length > 1;
+    const bubbleEl = findOriginalBubbleElement(noticeEl, rowEl);
+    const targetContainer = bubbleEl || noticeEl.parentElement || noticeEl;
 
     if (rowEl.dataset.fbUnsendRestored === 'true') {
-      if (displayText) {
+      if (hasEditHistory) {
+        const existingWrap = targetContainer.querySelector('.fb-unsend-edit-history-wrap');
+        if (!existingWrap || Number(existingWrap.dataset.fbEditCount || 0) < editHistory.length) {
+          if (existingWrap) existingWrap.remove();
+          const inlineSpan = noticeEl.querySelector('.fb-unsend-inline-text');
+          if (inlineSpan) inlineSpan.remove();
+          targetContainer.appendChild(
+            createDomEditHistoryElement(editHistory, Boolean(data.isSelf))
+          );
+        }
+      } else if (displayText) {
         const existingSpan = noticeEl.querySelector('.fb-unsend-inline-text');
         if (existingSpan && existingSpan.textContent !== displayText) {
           existingSpan.textContent = displayText;
@@ -4220,14 +4506,18 @@
     rowEl.dataset.fbUnsendRestored = 'true';
     rowEl.dataset.fbUnsendRestoredMid = getRowMessageId(rowEl) || data.messageId || '';
 
-    const bubbleEl = findOriginalBubbleElement(noticeEl, rowEl);
     if (bubbleEl) {
       bubbleEl.classList.add('fb-unsend-restored-bubble');
     }
 
     const baseText = (noticeEl.textContent || '').trim().replace(/[:.\s]+$/, '');
 
-    if (displayText) {
+    if (hasEditHistory) {
+      noticeEl.textContent = `${baseText}:`;
+      targetContainer.appendChild(
+        createDomEditHistoryElement(editHistory, Boolean(data.isSelf))
+      );
+    } else if (displayText) {
       noticeEl.textContent = `${baseText}: `;
       const contentSpan = document.createElement('span');
       contentSpan.className = 'fb-unsend-inline-text';
@@ -4243,7 +4533,7 @@
       cleanAttachments.forEach((url) => {
         mediaContainer.appendChild(createRestoredMediaElement(url, false));
       });
-      (bubbleEl || noticeEl.parentElement || noticeEl).appendChild(mediaContainer);
+      targetContainer.appendChild(mediaContainer);
     }
   }
 
@@ -4271,7 +4561,9 @@
         normalizedItemText && !(isAttachmentFilenameText(normalizedItemText) && cleanAttachments.length > 0)
           ? normalizedItemText
           : '';
-      if (!displayText && cleanAttachments.length === 0) return;
+      const editHistory = sanitizeEditHistoryList(item.editHistory, displayText);
+      const hasEditHistory = editHistory.length > 1;
+      if (!displayText && !hasEditHistory && cleanAttachments.length === 0) return;
 
       const wrap = document.createElement('div');
       wrap.className = `fb-unsend-community-item${
@@ -4285,12 +4577,15 @@
       const who = itemIsSelf ? 'Bạn' : item.personName || 'Thành viên';
       const labelSpan = document.createElement('span');
       labelSpan.className = 'fb-unsend-community-label';
-      labelSpan.textContent = displayText
-        ? `${who} đã xóa một tin nhắn: `
-        : `${who} đã xóa một tin nhắn:`;
+      labelSpan.textContent =
+        displayText && !hasEditHistory
+          ? `${who} đã xóa một tin nhắn: `
+          : `${who} đã xóa một tin nhắn:`;
       bubble.appendChild(labelSpan);
 
-      if (displayText) {
+      if (hasEditHistory) {
+        bubble.appendChild(createDomEditHistoryElement(editHistory, itemIsSelf));
+      } else if (displayText) {
         const textSpan = document.createElement('span');
         textSpan.className = 'fb-unsend-inline-text';
         textSpan.textContent = displayText;
@@ -4423,10 +4718,13 @@
       record.text && !(isAttachmentFilenameText(record.text) && cleanAtt.length > 0)
         ? record.text
         : '';
+    const toastEditHistory = sanitizeEditHistoryList(record.editHistory, displayText);
 
     const body = document.createElement('div');
     body.className = 'fb-unsend-toast-body';
-    if (displayText) {
+    if (toastEditHistory.length > 1) {
+      body.textContent = toastEditHistory.join(' → ');
+    } else if (displayText) {
       body.textContent = displayText;
     } else {
       body.classList.add('fb-unsend-toast-body-muted');

@@ -757,7 +757,8 @@ button {
   grid-area: anchor;
 }
 
-.msg-bubble {
+.msg-bubble,
+.msg-edit-stack {
   grid-area: bubble;
 }
 
@@ -851,6 +852,61 @@ button {
 .msg-card.is-self .msg-bubble {
   background: var(--accent);
   color: #ffffff;
+}
+
+/* Chuỗi lịch sử chỉnh sửa xếp chồng giống Facebook Messenger */
+.msg-edit-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 4px;
+  min-width: 0;
+}
+
+.msg-edit-toggle {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.25;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.msg-edit-toggle:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.msg-edit-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+}
+
+.msg-edit-list[hidden] {
+  display: none !important;
+}
+
+.msg-edit-stack .msg-bubble {
+  margin-top: 0;
+}
+
+.msg-bubble.is-edit-old {
+  background: var(--control);
+  color: var(--muted);
+  opacity: 0.72;
+}
+
+.msg-card.is-self .msg-bubble.is-edit-old {
+  background: rgba(8, 102, 255, 0.28);
+  color: rgba(255, 255, 255, 0.82);
+  opacity: 0.78;
 }
 
 .msg-media {

@@ -265,6 +265,38 @@ function getRecordAttachments(item) {
   return out;
 }
 
+function getRecordEditHistory(item) {
+  if (!item || typeof item !== 'object') return [];
+  const out = [];
+  const pushClean = val => {
+    if (typeof val !== 'string') return;
+    const t = val.trim();
+    if (!t || isDashMpdXmlString(t)) return;
+    if (
+      /^(Đã chỉnh sửa|Xem bản chỉnh sửa|Ẩn bản chỉnh sửa|Xem lịch sử chỉnh sửa|Ẩn lịch sử chỉnh sửa|Edited|View edit history|Hide edit history)$/i.test(
+        t
+      )
+    ) {
+      return;
+    }
+    if (out.length === 0 || out[out.length - 1] !== t) {
+      out.push(t);
+    }
+  };
+  if (Array.isArray(item.editHistory)) {
+    for (const entry of item.editHistory) {
+      pushClean(typeof entry === 'object' && entry !== null ? entry.text : entry);
+    }
+  }
+  if (typeof item.text === 'string' && item.text.trim()) {
+    const t = item.text.trim();
+    if (!out.includes(t)) {
+      pushClean(t);
+    }
+  }
+  return out;
+}
+
 function getRecordTime(item) {
   return item.unsentAt || item.timestamp || Date.now();
 }
@@ -488,7 +520,8 @@ function matchesSelectedThread(item, selectedKey) {
 function matchesKeyword(item, keyword) {
   if (!keyword) return true;
   const { person, thread } = parseRecordNames(item);
-  const hay = `${person} ${thread} ${item.senderName || ''} ${item.text || ''}`.toLowerCase();
+  const editStr = getRecordEditHistory(item).join(' ');
+  const hay = `${person} ${thread} ${item.senderName || ''} ${item.text || ''} ${editStr}`.toLowerCase();
   return hay.includes(keyword);
 }
 
@@ -879,7 +912,48 @@ function buildMessageCard(item, ts) {
     anchorEl.hidden = false;
   }
 
-  if (displayText) {
+  const editHistory = getRecordEditHistory(item).filter(
+    t => !(isAttachmentFilenameText(t) && attachments.length > 0)
+  );
+  const hasEditHistory = editHistory.length > 1;
+
+  if (hasEditHistory) {
+    const bubbleEl = card.querySelector('.msg-bubble');
+    const stackEl = document.createElement('div');
+    stackEl.className = 'msg-edit-stack';
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'msg-edit-toggle';
+    toggleBtn.textContent = 'Ẩn lịch sử chỉnh sửa';
+
+    const oldListEl = document.createElement('div');
+    oldListEl.className = 'msg-edit-list';
+    const olderVersions = editHistory.slice(0, -1);
+    olderVersions.forEach(verText => {
+      const oldBubble = document.createElement('div');
+      oldBubble.className = 'msg-bubble is-edit-old';
+      oldBubble.textContent = verText;
+      oldListEl.appendChild(oldBubble);
+    });
+
+    const latestBubble = document.createElement('div');
+    latestBubble.className = 'msg-bubble is-edit-latest';
+    latestBubble.textContent = editHistory[editHistory.length - 1];
+
+    toggleBtn.addEventListener('click', function () {
+      const willHide = !oldListEl.hidden;
+      oldListEl.hidden = willHide;
+      toggleBtn.textContent = willHide
+        ? `Xem lịch sử chỉnh sửa (${olderVersions.length})`
+        : 'Ẩn lịch sử chỉnh sửa';
+    });
+
+    stackEl.appendChild(toggleBtn);
+    stackEl.appendChild(oldListEl);
+    stackEl.appendChild(latestBubble);
+    bubbleEl.replaceWith(stackEl);
+  } else if (displayText) {
     const bubbleEl = card.querySelector('.msg-bubble');
     bubbleEl.textContent = displayText;
     bubbleEl.hidden = false;
@@ -904,14 +978,19 @@ function buildMessageCard(item, ts) {
 
   // ── Thao tác ──
   const copyBtn = card.querySelector('[data-action="copy"]');
-  if (displayText) {
+  const textToCopy = hasEditHistory ? editHistory.join('\n') : displayText;
+  if (textToCopy) {
     copyBtn.hidden = false;
     copyBtn.addEventListener('click', function () {
-      navigator.clipboard.writeText(displayText).then(function () {
+      navigator.clipboard.writeText(textToCopy).then(function () {
         const iconUse = copyBtn.querySelector('use');
         iconUse.setAttribute('href', '#i-check');
         copyBtn.classList.add('done');
-        showStatus('Đã sao chép nội dung tin nhắn');
+        showStatus(
+          hasEditHistory
+            ? 'Đã sao chép toàn bộ lịch sử chỉnh sửa tin nhắn'
+            : 'Đã sao chép nội dung tin nhắn'
+        );
         setTimeout(function () {
           iconUse.setAttribute('href', '#i-copy');
           copyBtn.classList.remove('done');
@@ -981,6 +1060,7 @@ function computeUnsentRenderSignature() {
         thread,
         isSelf,
         item.text,
+        getRecordEditHistory(item),
         getRecordAttachments(item),
         item.anchorAboveText,
         getRecordTime(item),
@@ -1220,6 +1300,14 @@ function smartMergeRecords(existingList, importedList, isUnsentCollection = true
           : ex.messageId || rawItem.messageId;
 
       const mergedAttachments = Array.from(new Set([...(ex.attachments || []), ...attachments]));
+      const exHistory = getRecordEditHistory(ex);
+      const impHistory = getRecordEditHistory(rawItem);
+      const mergedEditHistory = [...exHistory];
+      for (const h of impHistory) {
+        if (!mergedEditHistory.includes(h)) {
+          mergedEditHistory.push(h);
+        }
+      }
 
       const exThread = normalizeThreadKey(ex.threadName);
       const impThread = normalizeThreadKey(rawItem.threadName);
@@ -1230,7 +1318,11 @@ function smartMergeRecords(existingList, importedList, isUnsentCollection = true
         ...rawItem,
         messageId: bestId,
         isSelf: itemIsSelf,
-        text: ex.text || text,
+        text:
+          mergedEditHistory.length > 0
+            ? mergedEditHistory[mergedEditHistory.length - 1]
+            : ex.text || text,
+        editHistory: mergedEditHistory,
         attachments: mergedAttachments,
         threadName: bestThread,
         timestamp:

@@ -380,7 +380,15 @@
     /^Like, thumbs up$/i,
     /^Telegram sticker$/i,
     /^Đang hoạt động$/i,
-    /^Hoạt động .* trước$/i
+    /^Hoạt động .* trước$/i,
+    /^Đã chỉnh sửa$/i,
+    /^Xem bản chỉnh sửa$/i,
+    /^Ẩn bản chỉnh sửa$/i,
+    /^Xem lịch sử chỉnh sửa$/i,
+    /^Ẩn lịch sử chỉnh sửa$/i,
+    /^Edited$/i,
+    /^View edit history$/i,
+    /^Hide edit history$/i
   ];
 
   function isVaultToken(str) {
@@ -791,15 +799,20 @@
       allowHistoricalCapture
     } = msgData;
     if (!messageId) return;
-    if (allowHistoricalCapture) {
-      if (!timestamp || typeof timestamp !== 'number' || Date.now() - timestamp > 7 * 86400 * 1000) {
+    const preResolvedId = resolveCanonicalMessageId(messageId);
+    const hasPreExisting = Boolean(preResolvedId && capturedMessages.has(preResolvedId));
+    if (allowHistoricalCapture || hasPreExisting) {
+      if (
+        !hasPreExisting &&
+        (!timestamp || typeof timestamp !== 'number' || Date.now() - timestamp > 7 * 86400 * 1000)
+      ) {
         return;
       }
     } else if (isOldHistoricalTimestamp(timestamp)) {
       return;
     }
 
-    messageId = resolveCanonicalMessageId(messageId);
+    messageId = preResolvedId;
     const e2eeIds = extractIdsFromE2EEMsgId(messageId);
     if (e2eeIds.stanzaId && e2eeIds.stanzaId !== messageId) {
       aliasIdMap.set(e2eeIds.stanzaId, messageId);
@@ -888,14 +901,53 @@
     }
     if (!cleanText && cleanAttachments.length === 0) return;
 
-    const isAuthoritativeModule =
-      typeof source === 'string' && /^module:LS(Upsert|DeleteThenInsert|Insert)Message/i.test(source);
+    const isAttachmentOrSnippetSource =
+      typeof source === 'string' && /Attachment|Xma|ThreadSnippet/i.test(source);
+    const isEditHistoryTableSource =
+      typeof source === 'string' && /MessageEditHistory/i.test(source);
+    const isPlaceholderLikeText = (t) =>
+      !t ||
+      /^⚠️|^①|^🎬/i.test(t) ||
+      /^(audioclip|videoclip|voiceclip|audio_clip|video_clip|image|video|audio|file|sticker|gif|attachment)[_-][0-9a-f_-]+(\.[a-z0-9]+)?$/i.test(
+        t.trim()
+      );
+
+    const prevHistory = Array.isArray(existing?.editHistory)
+      ? [...existing.editHistory]
+      : existing?.text && !isPlaceholderLikeText(existing.text)
+        ? [existing.text]
+        : [];
+
+    let nextEditHistory = [...prevHistory];
+    let lastEditAt = existing?.lastEditAt || 0;
+
+    if (cleanText && !isPlaceholderLikeText(cleanText) && !isAttachmentOrSnippetSource) {
+      if (isEditHistoryTableSource) {
+        if (!nextEditHistory.includes(cleanText)) {
+          if (nextEditHistory.length > 0) {
+            nextEditHistory.splice(nextEditHistory.length - 1, 0, cleanText);
+          } else {
+            nextEditHistory.push(cleanText);
+          }
+          lastEditAt = Date.now();
+        }
+      } else if (nextEditHistory.length === 0) {
+        nextEditHistory.push(cleanText);
+        lastEditAt = Date.now();
+      } else if (nextEditHistory[nextEditHistory.length - 1] !== cleanText) {
+        const alreadySeenEarlier = nextEditHistory.includes(cleanText);
+        const nowMs = Date.now();
+        if (!alreadySeenEarlier || nowMs - lastEditAt > 1500) {
+          nextEditHistory.push(cleanText);
+          lastEditAt = nowMs;
+        }
+      }
+    }
+
     const finalText =
-      isAuthoritativeModule && cleanText
-        ? cleanText
-        : existing?.text
-          ? existing.text
-          : cleanText;
+      nextEditHistory.length > 0
+        ? nextEditHistory[nextEditHistory.length - 1]
+        : existing?.text || cleanText;
     const rawMergedAttachments = [...(existing?.attachments || [])];
     for (const url of cleanAttachments) {
       if (!rawMergedAttachments.includes(url)) {
@@ -925,12 +977,15 @@
     const isActuallyNew =
       !existing ||
       (!existing.text && finalText) ||
-      (isAuthoritativeModule && cleanText && existing.text !== finalText) ||
+      existing.text !== finalText ||
+      nextEditHistory.length > prevHistory.length ||
       mergedAttachments.length > (existing.attachments?.length || 0);
 
     const updatedRecord = {
       messageId,
       text: finalText,
+      editHistory: nextEditHistory,
+      lastEditAt,
       senderId: finalSenderId,
       threadId: finalThreadId,
       isSelf: typeof isSelf === 'boolean' ? isSelf : existing?.isSelf,
@@ -1302,7 +1357,7 @@
           return;
         }
 
-        if (timestamp && !isOldHistoricalTimestamp(timestamp)) {
+        if ((timestamp && !isOldHistoricalTimestamp(timestamp)) || existingRec) {
           if (rawText && (isVaultToken(rawText) || !isTechnicalString(rawText))) {
             registerCapturedMessage({
               messageId: msgId,
@@ -1311,8 +1366,9 @@
               senderId,
               threadId,
               attachments: [],
-              timestamp,
-              source: `module:${moduleName}`
+              timestamp: timestamp || existingRec?.timestamp || Date.now(),
+              source: `module:${moduleName}`,
+              allowHistoricalCapture: Boolean(existingRec)
             });
             return;
           }
@@ -1403,12 +1459,20 @@
       const primaryId = msgIds[0];
       const resolvedId = resolveCanonicalMessageId(primaryId);
       const savedMeta = messageMetaMap.get(resolvedId);
+      const existingRec = capturedMessages.get(resolvedId);
+      const isEditModule =
+        /EditMessage|ReplaceMessageText|UpdateMessage|MessageEditHistory/i.test(moduleName);
       const rawBestTimestamp = timestamps.length > 0 ? Math.min(...timestamps) : null;
-      const bestTimestamp = rawBestTimestamp || savedMeta?.timestamp || null;
+      const bestTimestamp =
+        rawBestTimestamp ||
+        savedMeta?.timestamp ||
+        existingRec?.timestamp ||
+        (isEditModule ? Date.now() : null);
       const isAttachmentMod = /Attachment/i.test(moduleName);
-      const fallbackThreadId = savedMeta?.threadId || candidateIds[0] || '';
+      const fallbackThreadId = savedMeta?.threadId || existingRec?.threadId || candidateIds[0] || '';
       const fallbackSenderId =
         savedMeta?.senderId ||
+        existingRec?.senderId ||
         (!isAttachmentMod && candidateIds[1] && candidateIds[1] !== fallbackThreadId
           ? candidateIds[1]
           : '') ||
@@ -1427,7 +1491,12 @@
           source: `module:${moduleName}`
         });
       } else if (texts.length > 0 || mediaUrls.length > 0) {
-        if (!bestTimestamp || isOldHistoricalTimestamp(bestTimestamp)) return;
+        if (
+          !bestTimestamp ||
+          (!existingRec && !isEditModule && isOldHistoricalTimestamp(bestTimestamp))
+        ) {
+          return;
+        }
         const isXmaOrAttachmentMod = /Xma|Attachment/i.test(moduleName);
         const uniqueTexts = Array.from(new Set(texts.map((t) => t.trim()).filter(Boolean)));
         const isUnsupportedAttachmentPacket =
@@ -1474,7 +1543,8 @@
           threadId: fallbackThreadId,
           attachments: mediaUrls,
           timestamp: bestTimestamp,
-          source: `module:${moduleName}`
+          source: `module:${moduleName}`,
+          allowHistoricalCapture: Boolean(existingRec || isEditModule)
         });
       }
     }
@@ -1632,7 +1702,7 @@
   }
 
   const SAFE_TARGET_MODULE_REGEX =
-    /^(LS(UpsertMessage|DeleteThenInsertMessage|InsertMessage|ReplaceOptimisticMessage|DeleteMessage|DeleteMessageRequest|MarkMessageUnsent|HandleUnsendMessage|UpdateMessage|InsertBlobAttachment|InsertAttachment|InsertXmaAttachment|InsertStickerAttachment|VerifyContactRowExists|UpdateOrInsertContact|UpsertContact|UpdateOrInsertThread|VerifyHybridThreadExists|UpsertThread)|MAW(UnvaultTransform|Vault|ThreadSnippetFor.*Msg|BridgeBuildThreadSnippet|BridgeBuildMsg|BridgeMsg|BridgeNewMsgHandler|BridgeNewMediaHandler)|Mps(RavenToBridge|MessageToBridge|MessageTextToBridge|MediaToBridge|RevokeMessageToBridgeMsg|XmaToBridge|NoteReplyToBridge))$/i;
+    /^(LS(UpsertMessage|DeleteThenInsertMessage|InsertMessage|ReplaceOptimisticMessage|EditMessage|ReplaceMessageText|UpdateMessageText|InsertMessageEditHistory|UpsertMessageEditHistory|DeleteMessage|DeleteMessageRequest|MarkMessageUnsent|HandleUnsendMessage|UpdateMessage|InsertBlobAttachment|InsertAttachment|InsertXmaAttachment|InsertStickerAttachment|VerifyContactRowExists|UpdateOrInsertContact|UpsertContact|UpdateOrInsertThread|VerifyHybridThreadExists|UpsertThread)|MAW(UnvaultTransform|Vault|ThreadSnippetFor.*Msg|BridgeBuildThreadSnippet|BridgeBuildMsg|BridgeMsg|BridgeEditMsg|BridgeUpdateMsg|EditMessage|BridgeNewMsgHandler|BridgeNewMediaHandler)|Mps(RavenToBridge|MessageToBridge|MessageTextToBridge|EditMessageToBridge|EditToBridge|MediaToBridge|RevokeMessageToBridgeMsg|XmaToBridge|NoteReplyToBridge))$/i;
 
   const PASSIVE_EXPORT_CAPTURE_REGEX =
     /^(Mps(OverBridge|RavenToBridge|MediaToBridge|MessageToBridge|MessageTextToBridge|RevokeMessageToBridgeMsg|MessageToBridgeWrapper|MessageToLoadResponse|ToBridgeMessageId|Types|LoadMessagesStep|ReactionSupplementals)|MAW(Vault|UnvaultTransform|ProtobufDeserializers|AttachmentBlob\.react|GetAttachmentThumbnailBlob|DbMedia|MediaDownloadStatusBackendFetcher|DownloadMediaInWorker|DownloadMediaInWorkerDeferred|BridgeNewMsgHandler|BridgeNewMediaHandler|BridgeBuildMsg|BridgeSendAndReceive|MediaManagerUtils|MediaUtils)|WAMediaTransport\.pb|WAArmadilloApplication\.pb|WAConsumerApplication\.pb|WAHashUtils|WAByteArray|decodeProtobuf|LSDatabaseSingleton|ReQL)$/i;
@@ -2516,7 +2586,7 @@
             currentFunc
           );
         const isExplicitInsertMsgFunc =
-          /^(insertMessage|upsertMessage|deleteThenInsertMessage|replaceOptimisticMessage|MAWThreadSnippetForTextMsg)$/i.test(
+          /^(insertMessage|upsertMessage|deleteThenInsertMessage|replaceOptimisticMessage|editMessage|replaceMessageText|updateMessageText|insertMessageEditHistory|MAWThreadSnippetForTextMsg)$/i.test(
             currentFunc
           );
 
@@ -2864,6 +2934,9 @@
           decoded.includes('upsertMessage') ||
           decoded.includes('insertMessage') ||
           decoded.includes('deleteThenInsertMessage') ||
+          decoded.includes('editMessage') ||
+          decoded.includes('replaceMessageText') ||
+          decoded.includes('insertMessageEditHistory') ||
           decoded.includes('markMessageUnsent') ||
           isUnsendNoticeText(decoded))
       ) {

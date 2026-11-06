@@ -42,6 +42,74 @@
   white-space: pre-wrap;
 }
 
+/* ===== Lịch sử chỉnh sửa tin nhắn trên khung chat Facebook ===== */
+.fb-unsend-edit-history-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.fb-unsend-edit-history-wrap.is-self {
+  align-items: flex-end;
+}
+
+.fb-unsend-edit-toggle {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fbu-label-color) !important;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  font-style: normal;
+  cursor: pointer;
+  opacity: 0.9;
+}
+
+.fb-unsend-edit-toggle:hover {
+  text-decoration: underline;
+  opacity: 1;
+}
+
+.fb-unsend-edit-list {
+  display: flex;
+  flex-direction: column;
+  align-items: inherit;
+  gap: 4px;
+  width: 100%;
+}
+
+.fb-unsend-edit-list[hidden] {
+  display: none !important;
+}
+
+.fb-unsend-edit-bubble {
+  display: inline-block;
+  max-width: 100%;
+  padding: 6px 12px;
+  border-radius: 18px;
+  font-style: normal !important;
+  font-size: 14px;
+  line-height: 1.35;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.fb-unsend-edit-bubble-old {
+  background: rgba(128, 128, 128, 0.22);
+  color: var(--fbu-label-color) !important;
+  font-weight: 500;
+  opacity: 0.82;
+}
+
+.fb-unsend-edit-bubble-latest {
+  background: rgba(229, 56, 59, 0.16);
+  color: var(--fbu-text) !important;
+  font-weight: 600;
+}
+
 .fb-unsend-media-list {
   display: flex;
   flex-wrap: wrap;
