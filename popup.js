@@ -1302,7 +1302,7 @@ function handleImportFile(file) {
         chrome.storage.local.set(
           {
             [STORAGE_KEY_UNSENT]: unsentMerge.result,
-            [STORAGE_KEY_MESSAGES]: capturedMerge.result.slice(-2000),
+            [STORAGE_KEY_MESSAGES]: capturedMerge.result.slice(-3000),
             [STORAGE_KEY_CLEANED_FLAG]: true
           },
           function () {

@@ -11,7 +11,7 @@
   const STORAGE_KEY_CLEANED_FLAG = 'fb_unsend_schema_v4_cleaned';
   const STORAGE_KEY_TOAST_ENABLED = 'fb_unsend_toast_enabled';
   const STORAGE_KEY_ORPHANED_BRIDGE = 'fb_unsend_orphaned_bridge_v1';
-  const MAX_STORED_MESSAGES = 500;
+  const MAX_STORED_MESSAGES = 3000;
 
   // Tùy chọn hiện thông báo ở góc màn hình (bật/tắt từ popup), mặc định bật
   let isToastEnabled = true;
