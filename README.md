@@ -8,7 +8,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/Manifest-V3-2563eb?style=flat-square&logo=googlechrome&logoColor=white" alt="Manifest V3" />
-    <img src="https://img.shields.io/badge/Version-1.2.4-7c3aed?style=flat-square" alt="Version 1.2.4" />
+    <img src="https://img.shields.io/badge/Version-1.2.5-7c3aed?style=flat-square" alt="Version 1.2.5" />
     <img src="https://img.shields.io/badge/Privacy-100%25%20Local-10b981?style=flat-square" alt="100% Local Privacy" />
     <img src="https://img.shields.io/badge/License-Non--Commercial%20(by%20binhake)-ef4444?style=flat-square" alt="License Non-Commercial (by binhake)" />
   </p>
@@ -42,10 +42,12 @@
 - **Hoạt động ngầm liên tục (Background WebSocket & DOM Tracking)**: Tự động bắt và lưu đệm tin nhắn ngay từ luồng dữ liệu của Facebook Messenger, kể cả khi bạn đang ở tab khác hoặc chưa mở khung chat.
 - **Khôi phục đa phương tiện đầy đủ**:
   - 💬 **Văn bản & Biểu tượng cảm xúc (Emoji / Sticker)**
-  - 🖼️ **Hình ảnh**: Tự động nén lưu đệm sang chuẩn WebP nhẹ, xem ảnh phóng to (Lightbox) và tải về máy.
+  - 🖼️ **Hình ảnh**: Luôn ưu tiên lấy chất lượng gốc độ phân giải cao nhất, lưu trữ bền vững (Base64) để xem lại kể cả khi link CDN Facebook hết hạn, hỗ trợ xem ảnh phóng to (Lightbox) và tải về máy.
   - 🎵 **Tin nhắn thoại (Voice / Audio clip)**: Tích hợp trình phát `<audio controls>` nghe lại trực tiếp ngay tại khung chat và trong Popup.
-  - 🎬 **Video**: Tích hợp trình phát `<video controls>` xem và tải về trực tiếp.
+  - 🎬 **Video**: Luôn chọn luồng video HD/gốc chất lượng cao nhất, tích hợp trình phát `<video controls>` xem và tải về trực tiếp.
   - 📎 **Tệp đính kèm & Liên kết xem trước (File / Link preview)**
+- **Hiển thị toàn bộ lịch sử chỉnh sửa tin nhắn bị gỡ**:
+  - Ghi nhận và hiển thị đầy đủ nội dung gốc cùng tất cả các lần chỉnh sửa trước khi tin nhắn bị thu hồi (`Xem lịch sử chỉnh sửa` / `Ẩn lịch sử chỉnh sửa`) theo đúng giao diện của Facebook.
 - **Mở khóa ảnh / video "Xem 1 lần" (View once)**:
   - Xem trực tiếp trên trình duyệt máy tính các tin ảnh/video xem 1 lần mà Facebook thường chỉ cho xem trên ứng dụng di động.
   - Hoạt động cả trong đoạn chat **mã hóa đầu cuối (E2EE)**, kể cả nhóm chat E2EE.
@@ -54,10 +56,14 @@
   - Thay thế dòng báo *"đã thu hồi một tin nhắn"* bằng khung nội dung gốc kèm nhãn `[ĐÃ GỠ]`.
   - Bám đúng vị trí tin nhắn ngay cả sau khi tải lại trang (F5) thông qua thuật toán neo ngữ cảnh (`anchorText`, `prevAnchorText`, `nextAnchorText`) và thời gian thực.
   - Hỗ trợ đầy đủ **Chat cá nhân (1-1)**, **Nhóm chat thường**, và **Đoạn chat cộng đồng (Community Chat)** trên Facebook.
-- **Giao diện quản lý Popup hiện đại (Hỗ trợ Sáng / Tối tự động)**:
+- **Giao diện quản lý Popup & Side Panel hiện đại (Hỗ trợ Sáng / Tối tự động)**:
+  - Mở nhanh bảng lịch sử ở **Thanh bên (Chrome Side Panel)** để vừa nhắn tin vừa theo dõi song song.
+  - Tự động trích xuất và hiển thị **Avatar thật của người gửi** (chuẩn xác theo UID và ngữ cảnh đoạn chat).
+  - Quản lý dung lượng ảnh/video/audio bị gỡ đã lưu kèm nút dọn dẹp riêng (giữ nguyên lịch sử văn bản).
+  - **Tự động kiểm tra bản cập nhật mới từ GitHub Releases**: Hiển thị huy hiệu `NEW` và thanh thông báo *"Đã có phiên bản mới → Tải ngay"* ngay trong Popup (hoặc nhấn trực tiếp vào số phiên bản ở góc dưới để kiểm tra).
   - Tìm kiếm tức thì theo nội dung hoặc tên người gửi.
   - Lọc nhanh theo cuộc trò chuyện / nhóm chat, hoặc theo phân loại (*Tất cả*, *Người khác*, *Bạn gỡ*, *Có ảnh*).
-  - Sao lưu (Export) và Khôi phục (Import) toàn bộ lịch sử qua tệp `.json`.
+  - Sao lưu (Export), Khôi phục (Import) toàn bộ lịch sử qua tệp `.json` và xuất nhanh tệp chẩn đoán lỗi (`Debug`).
 - **Quyền riêng tư tuyệt đối (100% Offline / Local)**:
   - Không máy chủ trung gian, không thu thập dữ liệu, không gửi bất kỳ thông tin nào ra bên ngoài. Toàn bộ dữ liệu chỉ nằm trong bộ nhớ trình duyệt (`chrome.storage.local`) trên máy của bạn.
 
@@ -68,7 +74,7 @@
 Bạn có thể cài đặt trên **Google Chrome**, **Microsoft Edge**, **Brave**, **Cốc Cốc**, hoặc bất kỳ trình duyệt nhân Chromium nào.
 
 #### Cách 1: Tải bản đóng gói sẵn (Khuyên dùng)
-1. Truy cập mục [**Releases**](../../releases) ở góc phải trang GitHub này và tải tệp `fb-unsend-viewer-v1.2.4.zip` mới nhất.
+1. Truy cập mục [**Releases**](../../releases) ở góc phải trang GitHub này và tải tệp `fb-unsend-viewer-v1.2.5.zip` mới nhất.
 2. Giải nén tệp `.zip` ra một thư mục cố định trên máy tính.
 3. Mở trình duyệt và truy cập đường dẫn quản lý tiện ích:
    - **Chrome**: `chrome://extensions/`
@@ -146,10 +152,12 @@ Dự án thuộc quyền sở hữu trí tuệ và bản quyền của **[binhak
 - **Real-Time Background Interception (WebSocket & DOM Tracking)**: Passively caches incoming messages and detects unsend events on Facebook Messenger—even when the tab is in the background or the chat box is closed.
 - **Full Multimedia Restoration**:
   - 💬 **Text, Emojis & Stickers**
-  - 🖼️ **Images**: Automatically cached in lightweight WebP format with built-in Lightbox preview and one-click download.
+  - 🖼️ **Images**: Always selects the highest-resolution original image, archives unsent media permanently as Base64 so it remains viewable even after Facebook CDN links expire, with built-in Lightbox preview and one-click download.
   - 🎵 **Voice Messages & Audio Clips**: Embedded `<audio controls>` player right inside the chat bubble and extension popup.
-  - 🎬 **Videos**: Embedded `<video controls>` player with direct download option.
+  - 🎬 **Videos**: Always selects the highest-quality HD/original video stream with an embedded `<video controls>` player and direct download option.
   - 📎 **File Attachments & Link Previews**
+- **Full Message Edit History on Unsend**:
+  - Captures and displays the original message along with every intermediate edit (`View edit history` / `Hide edit history`) in Facebook's native bubble style when an edited message is unsent.
 - **Unlock "View Once" Photos & Videos**:
   - View once photos/videos that Facebook normally only lets you open in the mobile app, right in your desktop browser.
   - Works in **end-to-end encrypted (E2EE)** chats, including E2EE group chats.
@@ -158,10 +166,14 @@ Dự án thuộc quyền sở hữu trí tuệ và bản quyền của **[binhak
   - Replaces the *"unsent a message"* placeholder directly inside the conversation with the original message content and an `[UNSENT]` badge.
   - Persists across page reloads (`F5`) using smart context-anchoring (`anchorText`, `prevAnchorText`, `nextAnchorText`) and timestamp matching.
   - Supports **1-on-1 Chats**, **Standard Group Chats**, and **Facebook Community Chats**.
-- **Modern Popup Dashboard (Auto Light / Dark Mode)**:
+- **Modern Popup & Side Panel Dashboard (Auto Light / Dark Mode)**:
+  - Open history in **Chrome's Side Panel** to browse unsent messages alongside your chats.
+  - Automatically extracts and displays **real sender avatars** (strictly matched by UID and thread context).
+  - Built-in **Unsent Media Storage Manager** showing total archived media size with one-click cleanup (while keeping text messages intact).
+  - **Automatic GitHub Releases Update Checker**: Displays a `NEW` badge and an in-app update banner when a newer release is available on GitHub (or click the version tag in the footer to check manually).
   - Instant search by message content or sender name.
   - Filter by conversation/thread or category (*All*, *Others*, *Self*, *With Media*).
-  - Full JSON **Export & Import** for easy backup and migration.
+  - Full JSON **Export & Import** for easy backup and migration, plus a one-click **Debug** log export button.
 - **100% Local & Private**:
   - Zero external servers, zero analytics, zero tracking. All cached messages and media stay strictly inside your browser's local storage (`chrome.storage.local`).
 
@@ -172,7 +184,7 @@ Dự án thuộc quyền sở hữu trí tuệ và bản quyền của **[binhak
 Compatible with **Google Chrome**, **Microsoft Edge**, **Brave**, **Opera**, and all Chromium-based browsers.
 
 #### Option 1: Download from Releases (Recommended)
-1. Go to the [**Releases**](../../releases) page and download the latest `fb-unsend-viewer-v1.2.4.zip`.
+1. Go to the [**Releases**](../../releases) page and download the latest `fb-unsend-viewer-v1.2.5.zip`.
 2. Extract the `.zip` archive to a permanent folder on your computer.
 3. Open your browser's extensions page:
    - **Chrome**: `chrome://extensions/`
