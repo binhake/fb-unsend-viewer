@@ -1214,11 +1214,126 @@
             if (needsResave) {
               saveToStorage();
             }
+            archiveAllPendingUnsentMedia();
             scheduleDomScan();
           } catch (_) {}
         }
       );
     } catch (_) {}
+  }
+
+  const MAX_ARCHIVE_MEDIA_BYTES = 25 * 1024 * 1024;
+  const archivedBase64ByUrl = new Map();
+  const inFlightMediaArchive = new Map();
+  const failedMediaArchiveUrls = new Set();
+
+  function fetchMediaUrlAsBase64(url) {
+    if (!url || typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+      return Promise.resolve('');
+    }
+    if (archivedBase64ByUrl.has(url)) {
+      return Promise.resolve(archivedBase64ByUrl.get(url));
+    }
+    if (failedMediaArchiveUrls.has(url)) {
+      return Promise.resolve('');
+    }
+    if (inFlightMediaArchive.has(url)) {
+      return inFlightMediaArchive.get(url);
+    }
+
+    const p = fetch(url, { credentials: 'omit' })
+      .then((resp) => {
+        if (!resp || !resp.ok) {
+          failedMediaArchiveUrls.add(url);
+          return null;
+        }
+        return resp.blob();
+      })
+      .then((blob) => {
+        if (!blob || blob.size === 0 || blob.size > MAX_ARCHIVE_MEDIA_BYTES) {
+          failedMediaArchiveUrls.add(url);
+          return '';
+        }
+        return new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const res = typeof reader.result === 'string' ? reader.result : '';
+            if (res.startsWith('data:')) {
+              archivedBase64ByUrl.set(url, res);
+              resolve(res);
+            } else {
+              failedMediaArchiveUrls.add(url);
+              resolve('');
+            }
+          };
+          reader.onerror = () => {
+            failedMediaArchiveUrls.add(url);
+            resolve('');
+          };
+          reader.readAsDataURL(blob);
+        });
+      })
+      .catch(() => {
+        failedMediaArchiveUrls.add(url);
+        return '';
+      })
+      .finally(() => {
+        inFlightMediaArchive.delete(url);
+      });
+
+    inFlightMediaArchive.set(url, p);
+    return p;
+  }
+
+  async function archiveUnsentRecordMedia(record) {
+    if (!record || !Array.isArray(record.attachments) || record.attachments.length === 0) {
+      return false;
+    }
+    const cleanList = sanitizeAttachmentsList(record.attachments);
+    if (!cleanList.some((u) => /^https?:\/\//i.test(u))) {
+      return false;
+    }
+
+    let changed = false;
+    const nextAttachments = [];
+    for (const url of cleanList) {
+      if (/^https?:\/\//i.test(url)) {
+        const dataUrl = await fetchMediaUrlAsBase64(url);
+        if (dataUrl) {
+          nextAttachments.push(dataUrl);
+          changed = true;
+        } else {
+          nextAttachments.push(url);
+        }
+      } else {
+        nextAttachments.push(url);
+      }
+    }
+
+    if (changed) {
+      record.attachments = nextAttachments;
+      if (record.messageId) {
+        messagesById.set(record.messageId, record);
+      }
+      saveToStorage();
+    }
+    return changed;
+  }
+
+  let isArchivingPendingUnsent = false;
+  async function archiveAllPendingUnsentMedia() {
+    if (isArchivingPendingUnsent) return;
+    isArchivingPendingUnsent = true;
+    try {
+      for (const rec of unsentMessagesList) {
+        if (rec && Array.isArray(rec.attachments) && rec.attachments.some((u) => /^https?:\/\//i.test(u))) {
+          await archiveUnsentRecordMedia(rec);
+        }
+      }
+    } catch (_) {
+    } finally {
+      isArchivingPendingUnsent = false;
+    }
   }
 
   function saveOrphanedBridgeToLocalStorage() {
@@ -1949,6 +2064,7 @@
       dlog('UNSENT-MERGED', '#00cec9', 'Cập nhật bản ghi gỡ đã có trong History:', merged);
       updateActiveToastIfPresent(merged);
       saveToStorage();
+      archiveUnsentRecordMedia(merged);
       return { record: merged, isNew: false };
     }
 
@@ -1993,6 +2109,7 @@
     unsentMessagesList.unshift(finalRecord);
     dlog('UNSENT-ADDED', '#e84118', 'Đã thêm bản ghi gỡ MỚI vào History:', finalRecord);
     saveToStorage();
+    archiveUnsentRecordMedia(finalRecord);
     showUnsentToast(finalRecord);
     notifyUnreadBadge();
     return { record: finalRecord, isNew: true };

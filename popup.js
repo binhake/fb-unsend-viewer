@@ -30,7 +30,8 @@ const appState = {
   tabFilter: 'all', // 'all' | 'others' | 'self' | 'media'
   threadFilter: 'ALL',
   statusTimer: null,
-  lastRenderSignature: ''
+  lastRenderSignature: '',
+  confirmMode: 'all' // 'all' | 'media'
 };
 
 const dom = {};
@@ -43,6 +44,8 @@ function cacheDom() {
   dom.filterTabs = document.getElementById('filter-tabs');
   dom.tabButtons = dom.filterTabs.querySelectorAll('.tab-btn');
   dom.tabCounts = dom.filterTabs.querySelectorAll('.tab-count');
+  dom.mediaStorageValue = document.getElementById('media-storage-value');
+  dom.clearMediaBtn = document.getElementById('clear-media-btn');
 
   dom.exportBtn = document.getElementById('export-btn');
   dom.importBtn = document.getElementById('import-btn');
@@ -51,6 +54,7 @@ function cacheDom() {
   dom.toastToggle = document.getElementById('toast-toggle');
 
   dom.confirmModal = document.getElementById('confirm-modal');
+  dom.confirmTitle = document.getElementById('confirm-title');
   dom.confirmDesc = document.getElementById('confirm-desc');
   dom.confirmCancel = document.getElementById('confirm-cancel');
   dom.confirmOk = document.getElementById('confirm-ok');
@@ -1182,9 +1186,159 @@ function computeUnsentRenderSignature() {
   );
 }
 
+function formatMediaStorageBytes(bytes) {
+  if (!bytes || bytes <= 0) return '0 KB';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1).replace('.', ',')} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(2).replace('.', ',')} MB`;
+}
+
+function computeMediaStorageStats() {
+  let totalBytes = 0;
+  let unsentFileCount = 0;
+  let totalFileCount = 0;
+
+  for (const item of appState.unsentMessages) {
+    if (!item || !Array.isArray(item.attachments)) continue;
+    const { renderUrls, posterUrl } = splitVideoPosterFromAttachments(getRecordAttachments(item));
+    unsentFileCount += renderUrls.length;
+    totalFileCount += renderUrls.length;
+    for (const u of item.attachments) {
+      if (typeof u === 'string' && u) {
+        totalBytes += u.length;
+      }
+    }
+    if (posterUrl && !item.attachments.includes(posterUrl)) {
+      totalBytes += posterUrl.length;
+    }
+  }
+
+  for (const item of appState.capturedMessages) {
+    if (!item || !Array.isArray(item.attachments) || item.attachments.length === 0) continue;
+    for (const u of item.attachments) {
+      if (typeof u === 'string' && u) {
+        totalBytes += u.length;
+        totalFileCount++;
+      }
+    }
+  }
+
+  return {
+    totalBytes,
+    unsentFileCount,
+    totalFileCount,
+    formattedSize: formatMediaStorageBytes(totalBytes)
+  };
+}
+
+function updateMediaStorageBar() {
+  if (!dom.mediaStorageValue || !dom.clearMediaBtn) return;
+  const stats = computeMediaStorageStats();
+  const displayCount = stats.unsentFileCount || stats.totalFileCount;
+  dom.mediaStorageValue.textContent = `${stats.formattedSize} (${displayCount.toLocaleString('vi-VN')} tệp)`;
+  dom.clearMediaBtn.disabled = stats.totalFileCount === 0 && stats.totalBytes === 0;
+}
+
+const MAX_POPUP_ARCHIVE_BYTES = 25 * 1024 * 1024;
+const popupArchivedUrlMap = new Map();
+const popupFailedUrlSet = new Set();
+let isPopupArchivingMedia = false;
+
+function fetchPopupMediaAsBase64(url) {
+  if (!url || typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    return Promise.resolve('');
+  }
+  if (popupArchivedUrlMap.has(url)) {
+    return Promise.resolve(popupArchivedUrlMap.get(url));
+  }
+  if (popupFailedUrlSet.has(url)) {
+    return Promise.resolve('');
+  }
+  return fetch(url, { credentials: 'omit' })
+    .then(resp => {
+      if (!resp || !resp.ok) {
+        popupFailedUrlSet.add(url);
+        return null;
+      }
+      return resp.blob();
+    })
+    .then(blob => {
+      if (!blob || blob.size === 0 || blob.size > MAX_POPUP_ARCHIVE_BYTES) {
+        popupFailedUrlSet.add(url);
+        return '';
+      }
+      return new Promise(resolve => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+          if (dataUrl.startsWith('data:')) {
+            popupArchivedUrlMap.set(url, dataUrl);
+            resolve(dataUrl);
+          } else {
+            popupFailedUrlSet.add(url);
+            resolve('');
+          }
+        };
+        reader.onerror = () => {
+          popupFailedUrlSet.add(url);
+          resolve('');
+        };
+        reader.readAsDataURL(blob);
+      });
+    })
+    .catch(() => {
+      popupFailedUrlSet.add(url);
+      return '';
+    });
+}
+
+async function archivePendingPopupUnsentMedia() {
+  if (isPopupArchivingMedia) return;
+  isPopupArchivingMedia = true;
+  try {
+    let anyArchived = false;
+    for (const item of appState.unsentMessages) {
+      if (!item || !Array.isArray(item.attachments) || !item.attachments.some(u => /^https?:\/\//i.test(u))) {
+        continue;
+      }
+      let itemChanged = false;
+      const nextAtts = [];
+      for (const u of item.attachments) {
+        if (/^https?:\/\//i.test(u)) {
+          const base64Url = await fetchPopupMediaAsBase64(u);
+          if (base64Url) {
+            nextAtts.push(base64Url);
+            itemChanged = true;
+          } else {
+            nextAtts.push(u);
+          }
+        } else {
+          nextAtts.push(u);
+        }
+      }
+      if (itemChanged) {
+        item.attachments = nextAtts;
+        anyArchived = true;
+        updateMediaStorageBar();
+      }
+    }
+    if (anyArchived) {
+      chrome.storage.local.set({ [STORAGE_KEY_UNSENT]: appState.unsentMessages }, function () {
+        refreshView();
+      });
+    }
+  } catch (_) {
+  } finally {
+    isPopupArchivingMedia = false;
+  }
+}
+
 function refreshView() {
   appState.lastRenderSignature = computeUnsentRenderSignature();
   updateThreadOptions();
+  updateMediaStorageBar();
   renderList();
 }
 
@@ -1226,11 +1380,13 @@ function loadPopupData(isBackgroundUpdate = false) {
     dom.toastToggle.checked = res[STORAGE_KEY_TOAST_ENABLED] !== false;
     if (isBackgroundUpdate && appState.lastRenderSignature) {
       // dom.footerInfo.textContent = `Lưu tạm ${appState.capturedMessages.length.toLocaleString('vi-VN')} tin để đối chiếu`;
+      updateMediaStorageBar();
       if (computeUnsentRenderSignature() === appState.lastRenderSignature) {
         return;
       }
     }
     refreshView();
+    archivePendingPopupUnsentMedia();
   });
 
   if (!isBackgroundUpdate) {
@@ -1526,16 +1682,37 @@ function handleImportFile(file) {
 // SỰ KIỆN GIAO DIỆN
 // ============================================================================
 
-// ── Hộp thoại xác nhận xóa toàn bộ ──
-function openConfirmModal() {
-  const count = appState.unsentMessages.length.toLocaleString('vi-VN');
-  const strong = document.createElement('strong');
-  strong.textContent = `${count} tin nhắn đã gỡ`;
-  dom.confirmDesc.replaceChildren(
-    'Toàn bộ ',
-    strong,
-    ' sẽ bị xóa vĩnh viễn và không thể khôi phục. Nên xuất bản sao lưu trước nếu cần.'
-  );
+// ── Hộp thoại xác nhận xóa (toàn bộ lịch sử hoặc chỉ xóa tệp media) ──
+function openConfirmModal(mode = 'all') {
+  appState.confirmMode = mode;
+  if (mode === 'media') {
+    const stats = computeMediaStorageStats();
+    const displayCount = (stats.unsentFileCount || stats.totalFileCount).toLocaleString('vi-VN');
+    if (dom.confirmTitle) {
+      dom.confirmTitle.textContent = 'Xóa toàn bộ ảnh/video/audio?';
+    }
+    dom.confirmOk.textContent = 'Xóa media';
+    const strong = document.createElement('strong');
+    strong.textContent = `${displayCount} tệp đính kèm (${stats.formattedSize})`;
+    dom.confirmDesc.replaceChildren(
+      'Toàn bộ ',
+      strong,
+      ' đã lưu sẽ bị xóa để giải phóng bộ nhớ. Các tin nhắn văn bản và lịch sử chỉnh sửa vẫn được giữ nguyên.'
+    );
+  } else {
+    const count = appState.unsentMessages.length.toLocaleString('vi-VN');
+    if (dom.confirmTitle) {
+      dom.confirmTitle.textContent = 'Xóa toàn bộ lịch sử?';
+    }
+    dom.confirmOk.textContent = 'Xóa tất cả';
+    const strong = document.createElement('strong');
+    strong.textContent = `${count} tin nhắn đã gỡ`;
+    dom.confirmDesc.replaceChildren(
+      'Toàn bộ ',
+      strong,
+      ' sẽ bị xóa vĩnh viễn và không thể khôi phục. Nên xuất bản sao lưu trước nếu cần.'
+    );
+  }
   dom.confirmModal.hidden = false;
   // Mặc định focus vào "Hủy" để lỡ nhấn Enter cũng không xóa nhầm
   dom.confirmCancel.focus();
@@ -1543,7 +1720,11 @@ function openConfirmModal() {
 
 function closeConfirmModal() {
   dom.confirmModal.hidden = true;
-  dom.clearAllBtn.focus();
+  if (appState.confirmMode === 'media' && dom.clearMediaBtn && !dom.clearMediaBtn.disabled) {
+    dom.clearMediaBtn.focus();
+  } else {
+    dom.clearAllBtn.focus();
+  }
 }
 
 function handleClearAllClick() {
@@ -1551,7 +1732,16 @@ function handleClearAllClick() {
     showStatus('Danh sách tin nhắn bị gỡ đang trống');
     return;
   }
-  openConfirmModal();
+  openConfirmModal('all');
+}
+
+function handleClearMediaClick() {
+  const stats = computeMediaStorageStats();
+  if (stats.totalFileCount === 0 && stats.totalBytes === 0) {
+    showStatus('Hiện không có tệp ảnh/video/audio nào đang lưu');
+    return;
+  }
+  openConfirmModal('media');
 }
 
 function clearAllUnsentMessages() {
@@ -1561,6 +1751,65 @@ function clearAllUnsentMessages() {
     refreshView();
     showStatus('Đã xóa toàn bộ lịch sử tin nhắn bị gỡ');
   });
+}
+
+function clearAllMediaAttachments() {
+  const beforeStats = computeMediaStorageStats();
+  dom.confirmModal.hidden = true;
+
+  appState.unsentMessages = appState.unsentMessages.map(item => {
+    if (!item || !Array.isArray(item.attachments) || item.attachments.length === 0) {
+      return item;
+    }
+    const hadAudio = item.attachments.some(u => getAttachmentMediaType(u) === 'audio');
+    const hadVideo = item.attachments.some(u => getAttachmentMediaType(u) === 'video');
+    const cleanText =
+      item.text && !(isAttachmentFilenameText(item.text) && item.attachments.length > 0)
+        ? item.text.trim()
+        : '';
+    const fallbackLabel = hadAudio
+      ? '🎵 [Đã xóa âm thanh đính kèm để giải phóng dung lượng]'
+      : hadVideo
+        ? '🎬 [Đã xóa video đính kèm để giải phóng dung lượng]'
+        : '🖼️ [Đã xóa hình ảnh đính kèm để giải phóng dung lượng]';
+    return {
+      ...item,
+      text: cleanText || fallbackLabel,
+      attachments: []
+    };
+  });
+
+  appState.capturedMessages = appState.capturedMessages
+    .map(item => {
+      if (!item || !Array.isArray(item.attachments) || item.attachments.length === 0) {
+        return item;
+      }
+      return {
+        ...item,
+        attachments: []
+      };
+    })
+    .filter(item => item && item.text && item.text.trim());
+
+  popupArchivedUrlMap.clear();
+  chrome.storage.local.set(
+    {
+      [STORAGE_KEY_UNSENT]: appState.unsentMessages,
+      [STORAGE_KEY_MESSAGES]: appState.capturedMessages
+    },
+    function () {
+      refreshView();
+      showStatus(`Đã xóa tệp đính kèm và giải phóng ${beforeStats.formattedSize} bộ nhớ`);
+    }
+  );
+}
+
+function handleConfirmOkClick() {
+  if (appState.confirmMode === 'media') {
+    clearAllMediaAttachments();
+  } else {
+    clearAllUnsentMessages();
+  }
 }
 
 function bindEvents() {
@@ -1626,8 +1875,11 @@ function bindEvents() {
   });
 
   dom.clearAllBtn.addEventListener('click', handleClearAllClick);
+  if (dom.clearMediaBtn) {
+    dom.clearMediaBtn.addEventListener('click', handleClearMediaClick);
+  }
   dom.confirmCancel.addEventListener('click', closeConfirmModal);
-  dom.confirmOk.addEventListener('click', clearAllUnsentMessages);
+  dom.confirmOk.addEventListener('click', handleConfirmOkClick);
   dom.confirmModal.addEventListener('click', function (e) {
     if (e.target === dom.confirmModal) {
       closeConfirmModal();

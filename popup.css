@@ -573,6 +573,66 @@ button {
   color: #ffffff;
 }
 
+/* ===== Thanh hiển thị dung lượng media & nút xóa media ===== */
+.media-storage-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.media-storage-info {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.media-storage-value {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.clear-media-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--bg);
+  color: var(--danger);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s, opacity 0.15s;
+}
+
+.clear-media-btn .icon {
+  width: 13px;
+  height: 13px;
+}
+
+.clear-media-btn:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
+
+.clear-media-btn:disabled {
+  opacity: 0.45;
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
 /* ===== Công tắc thông báo ===== */
 .setting-row {
   display: flex;
