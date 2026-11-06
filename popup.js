@@ -177,6 +177,100 @@ function isDashStreamVideoUrl(url) {
   return typeof url === 'string' && /[?&]efg=eyJ2ZW5jb2RlX3RhZyI6ImRhc2hf/i.test(url);
 }
 
+function isVideoPosterImageUrl(url) {
+  return (
+    typeof url === 'string' &&
+    getAttachmentMediaType(url) === 'image' &&
+    /\/v\/t15\./i.test(url)
+  );
+}
+
+function extractMediaAssetKey(url) {
+  if (!url || typeof url !== 'string' || url.startsWith('data:')) return '';
+  const assetMatch = url.match(
+    /\/(\d+_\d+_\d+_[a-z0-9]+)\.(jpg|jpeg|png|webp|gif|mp4|webm|mov|m4a|mp3|ogg)(?:$|\?|#)/i
+  );
+  if (assetMatch) {
+    return `${assetMatch[1].toLowerCase()}.${assetMatch[2].toLowerCase()}`;
+  }
+  try {
+    const parsed = new URL(url);
+    return parsed.pathname.toLowerCase();
+  } catch (_) {
+    return url.split('?')[0].toLowerCase();
+  }
+}
+
+function getMediaUrlQualityScore(url) {
+  if (!url || typeof url !== 'string') return 0;
+  if (url.startsWith('data:')) return 900000 + Math.min(url.length, 99999);
+  const stpResizeMatch = url.match(/[?&]stp=[^&#]*?[ps](\d+)x(\d+)/i);
+  if (stpResizeMatch) {
+    return Math.max(Number(stpResizeMatch[1]) || 0, Number(stpResizeMatch[2]) || 0);
+  }
+  const pathResizeMatch = url.match(/\/[ps](\d+)x(\d+)\//i);
+  if (pathResizeMatch) {
+    return Math.max(Number(pathResizeMatch[1]) || 0, Number(pathResizeMatch[2]) || 0);
+  }
+  if (getAttachmentMediaType(url) === 'video') {
+    if (isDashStreamVideoUrl(url)) return 500;
+    const efgMatch = url.match(/[?&]efg=([A-Za-z0-9%_+-]+)/i);
+    if (efgMatch) {
+      try {
+        const decoded = atob(decodeURIComponent(efgMatch[1]));
+        if (/1080|hd|high/i.test(decoded)) return 1001080;
+        if (/720/i.test(decoded)) return 1000720;
+        if (/480|360|sd/i.test(decoded)) return 999480;
+      } catch (_) {}
+    }
+  }
+  return 1000000;
+}
+
+function deduplicateHighestQualityAttachments(urls) {
+  if (!Array.isArray(urls) || urls.length <= 1) return Array.isArray(urls) ? urls : [];
+  const bestByKey = new Map();
+  const orderKeys = [];
+  for (const u of urls) {
+    if (!u || typeof u !== 'string') continue;
+    const mediaType = getAttachmentMediaType(u);
+    const key = mediaType !== 'audio' ? extractMediaAssetKey(u) || u : u;
+    const score = getMediaUrlQualityScore(u);
+    if (!bestByKey.has(key)) {
+      bestByKey.set(key, { url: u, score });
+      orderKeys.push(key);
+    } else if (score > bestByKey.get(key).score) {
+      bestByKey.set(key, { url: u, score });
+    }
+  }
+  const deduped = orderKeys.map(k => bestByKey.get(k).url);
+  const httpsImages = deduped.filter(
+    u => /^https?:\/\//i.test(u) && getAttachmentMediaType(u) === 'image' && !isVideoPosterImageUrl(u)
+  );
+  if (httpsImages.length > 0) {
+    return deduped.filter(u => !u.startsWith('data:image/webp;base64,'));
+  }
+  return deduped;
+}
+
+function splitVideoPosterFromAttachments(urls) {
+  if (!Array.isArray(urls) || urls.length === 0) {
+    return { renderUrls: [], posterUrl: '' };
+  }
+  const hasVideo = urls.some(u => getAttachmentMediaType(u) === 'video');
+  if (!hasVideo) {
+    return { renderUrls: urls, posterUrl: '' };
+  }
+  const posterUrl = urls.find(u => isVideoPosterImageUrl(u)) || '';
+  if (!posterUrl) {
+    return { renderUrls: urls, posterUrl: '' };
+  }
+  return {
+    renderUrls: urls.filter(u => !isVideoPosterImageUrl(u)),
+    posterUrl
+  };
+}
+
 function sanitizePopupRecord(item) {
   if (!item || typeof item !== 'object') return { item, changed: false };
   let changed = false;
@@ -223,6 +317,15 @@ function sanitizePopupRecord(item) {
     changed = true;
   }
 
+  const dedupedQuality = deduplicateHighestQualityAttachments(cleanAttachments);
+  if (
+    dedupedQuality.length !== cleanAttachments.length ||
+    dedupedQuality.some((u, idx) => u !== cleanAttachments[idx])
+  ) {
+    cleanAttachments = dedupedQuality;
+    changed = true;
+  }
+
   if (!changed) {
     return { item, changed: false };
   }
@@ -262,7 +365,7 @@ function getRecordAttachments(item) {
   if (hasProgressiveVideo) {
     out = out.filter(u => !isDashStreamVideoUrl(u));
   }
-  return out;
+  return deduplicateHighestQualityAttachments(out);
 }
 
 function getRecordEditHistory(item) {
@@ -559,7 +662,7 @@ function buildMediaThumb(url) {
   return thumb;
 }
 
-function buildMediaItem(url, onExpired) {
+function buildMediaItem(url, onExpired, posterUrl = '') {
   const mediaType = getAttachmentMediaType(url);
   if (mediaType === 'audio') {
     const audio = document.createElement('audio');
@@ -581,6 +684,9 @@ function buildMediaItem(url, onExpired) {
     video.controls = true;
     video.preload = 'metadata';
     video.playsInline = true;
+    if (posterUrl) {
+      video.poster = posterUrl;
+    }
     video.src = url;
     video.className = 'media-video';
     video.addEventListener('error', function () {
@@ -961,16 +1067,22 @@ function buildMessageCard(item, ts) {
 
   const downloadBtn = card.querySelector('[data-action="download"]');
   if (attachments.length > 0) {
-    applyDownloadLink(downloadBtn, attachments[0]);
+    const { renderUrls, posterUrl } = splitVideoPosterFromAttachments(attachments);
+    const primaryUrl = renderUrls[0] || attachments[0];
+    applyDownloadLink(downloadBtn, primaryUrl);
     downloadBtn.hidden = false;
     const mediaEl = card.querySelector('.msg-media');
-    attachments.forEach((url, idx) => {
+    renderUrls.forEach((url, idx) => {
       mediaEl.appendChild(
-        buildMediaItem(url, function () {
-          if (idx === 0 && downloadBtn) {
-            downloadBtn.hidden = true;
-          }
-        })
+        buildMediaItem(
+          url,
+          function () {
+            if (idx === 0 && downloadBtn) {
+              downloadBtn.hidden = true;
+            }
+          },
+          posterUrl
+        )
       );
     });
     mediaEl.hidden = false;

@@ -258,6 +258,75 @@
     return typeof url === 'string' && /[?&]efg=eyJ2ZW5jb2RlX3RhZyI6ImRhc2hf/i.test(url);
   }
 
+  function isVideoPosterImageUrl(url) {
+    return (
+      typeof url === 'string' &&
+      getAttachmentMediaType(url) === 'image' &&
+      /\/v\/t15\./i.test(url)
+    );
+  }
+
+  function extractMediaAssetKey(url) {
+    if (!url || typeof url !== 'string' || url.startsWith('data:')) return '';
+    const assetMatch = url.match(
+      /\/(\d+_\d+_\d+_[a-z0-9]+)\.(jpg|jpeg|png|webp|gif|mp4|webm|mov|m4a|mp3|ogg)(?:$|\?|#)/i
+    );
+    if (assetMatch) {
+      return `${assetMatch[1].toLowerCase()}.${assetMatch[2].toLowerCase()}`;
+    }
+    try {
+      const parsed = new URL(url);
+      return parsed.pathname.toLowerCase();
+    } catch (_) {
+      return url.split('?')[0].toLowerCase();
+    }
+  }
+
+  function getMediaUrlQualityScore(url) {
+    if (!url || typeof url !== 'string') return 0;
+    if (url.startsWith('data:')) return 900000 + Math.min(url.length, 99999);
+    const stpResizeMatch = url.match(/[?&]stp=[^&#]*?[ps](\d+)x(\d+)/i);
+    if (stpResizeMatch) {
+      return Math.max(Number(stpResizeMatch[1]) || 0, Number(stpResizeMatch[2]) || 0);
+    }
+    const pathResizeMatch = url.match(/\/[ps](\d+)x(\d+)\//i);
+    if (pathResizeMatch) {
+      return Math.max(Number(pathResizeMatch[1]) || 0, Number(pathResizeMatch[2]) || 0);
+    }
+    if (getAttachmentMediaType(url) === 'video') {
+      if (isDashStreamVideoUrl(url)) return 500;
+      const efgMatch = url.match(/[?&]efg=([A-Za-z0-9%_+-]+)/i);
+      if (efgMatch) {
+        try {
+          const decoded = atob(decodeURIComponent(efgMatch[1]));
+          if (/1080|hd|high/i.test(decoded)) return 1001080;
+          if (/720/i.test(decoded)) return 1000720;
+          if (/480|360|sd/i.test(decoded)) return 999480;
+        } catch (_) {}
+      }
+    }
+    return 1000000;
+  }
+
+  function deduplicateHighestQualityAttachments(urls) {
+    if (!Array.isArray(urls) || urls.length <= 1) return Array.isArray(urls) ? urls : [];
+    const bestByKey = new Map();
+    const orderKeys = [];
+    for (const u of urls) {
+      if (!u || typeof u !== 'string') continue;
+      const mediaType = getAttachmentMediaType(u);
+      const key = mediaType !== 'audio' ? extractMediaAssetKey(u) || u : u;
+      const score = getMediaUrlQualityScore(u);
+      if (!bestByKey.has(key)) {
+        bestByKey.set(key, { url: u, score });
+        orderKeys.push(key);
+      } else if (score > bestByKey.get(key).score) {
+        bestByKey.set(key, { url: u, score });
+      }
+    }
+    return orderKeys.map((k) => bestByKey.get(k).url);
+  }
+
   function sanitizeAttachmentsList(attachments) {
     if (!Array.isArray(attachments)) return [];
     const valid = [];
@@ -282,12 +351,15 @@
       ? valid.filter((u) => !isDashStreamVideoUrl(u))
       : valid;
 
-    const dataImages = dedupedVideos.filter((u) => u.startsWith('data:image/'));
-    if (dataImages.length > 0) {
-      const nonImages = dedupedVideos.filter((u) => getAttachmentMediaType(u) !== 'image');
-      return [...dataImages, ...nonImages];
+    const dedupedQuality = deduplicateHighestQualityAttachments(dedupedVideos);
+    const httpsImages = dedupedQuality.filter(
+      (u) => /^https?:\/\//i.test(u) && getAttachmentMediaType(u) === 'image' && !isVideoPosterImageUrl(u)
+    );
+    if (httpsImages.length > 0) {
+      // Nếu đã có URL ảnh gốc https:// từ mạng/Fiber thì loại bỏ ảnh chụp canvas DOM preview (data:image/webp) để luôn giữ chất lượng cao nhất
+      return dedupedQuality.filter((u) => !u.startsWith('data:image/webp;base64,'));
     }
-    return dedupedVideos;
+    return dedupedQuality;
   }
 
   function isExtensionContextValid() {
@@ -2448,7 +2520,7 @@
 
     if (imgEl.complete && imgEl.naturalWidth > 64 && imgEl.naturalHeight > 64) {
       try {
-        const maxDim = 360;
+        const maxDim = 2048;
         let w = imgEl.naturalWidth;
         let h = imgEl.naturalHeight;
         if (w > maxDim || h > maxDim) {
@@ -2465,7 +2537,7 @@
         canvas.height = h;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(imgEl, 0, 0, w, h);
-        const dataUrl = canvas.toDataURL('image/webp', 0.82);
+        const dataUrl = canvas.toDataURL('image/webp', 0.92);
         if (dataUrl && dataUrl.startsWith('data:image/')) {
           cachedImageMap.set(rawSrc, dataUrl);
           return dataUrl;
@@ -2880,6 +2952,9 @@
           seenPhotoContainers.add(photoContainer);
         }
 
+        if (/^https?:\/\//i.test(rawSrc) && !attachments.includes(rawSrc)) {
+          attachments.push(rawSrc);
+        }
         const cachedSrc = getOrCacheImageSrc(mediaEl);
         if (cachedSrc && !attachments.includes(cachedSrc)) {
           attachments.push(cachedSrc);
@@ -4298,7 +4373,13 @@
 
     const downloadBtn = document.createElement('a');
     downloadBtn.href = url;
-    downloadBtn.download = `fb-unsent-image-${Date.now()}.webp`;
+    const extMatch =
+      url.match(/^data:image\/([a-z0-9+]+);/i) ||
+      url.match(/\.(jpg|jpeg|png|webp|gif)(?:$|\?|#)/i);
+    const imgExt = extMatch
+      ? extMatch[1].toLowerCase().replace('jpeg', 'jpg')
+      : 'jpg';
+    downloadBtn.download = `fb-unsent-image-${Date.now()}.${imgExt}`;
     downloadBtn.className = 'fb-unsend-lightbox-download';
     downloadBtn.appendChild(createIcon(ICON_PATHS.download));
     downloadBtn.appendChild(document.createTextNode('Tải ảnh về máy'));
@@ -4328,7 +4409,25 @@
     document.body.appendChild(overlay);
   }
 
-  function createRestoredMediaElement(url, isToast = false) {
+  function splitVideoPosterFromAttachments(urls) {
+    if (!Array.isArray(urls) || urls.length === 0) {
+      return { renderUrls: [], posterUrl: '' };
+    }
+    const hasVideo = urls.some((u) => getAttachmentMediaType(u) === 'video');
+    if (!hasVideo) {
+      return { renderUrls: urls, posterUrl: '' };
+    }
+    const posterUrl = urls.find((u) => isVideoPosterImageUrl(u)) || '';
+    if (!posterUrl) {
+      return { renderUrls: urls, posterUrl: '' };
+    }
+    return {
+      renderUrls: urls.filter((u) => !isVideoPosterImageUrl(u)),
+      posterUrl
+    };
+  }
+
+  function createRestoredMediaElement(url, isToast = false, posterUrl = '') {
     const mediaType = getAttachmentMediaType(url);
     if (mediaType === 'audio') {
       const audio = document.createElement('audio');
@@ -4350,6 +4449,9 @@
       video.controls = true;
       video.preload = 'metadata';
       video.playsInline = true;
+      if (posterUrl) {
+        video.poster = posterUrl;
+      }
       video.src = url;
       video.className = isToast ? 'fb-unsend-toast-video' : 'fb-unsend-restored-video';
       video.addEventListener('click', (e) => e.stopPropagation());
@@ -4381,6 +4483,7 @@
     }
     const cleanAttachments = sanitizeAttachmentsList(attachments);
     if (cleanAttachments.length === 0) return;
+    const { renderUrls, posterUrl } = splitVideoPosterFromAttachments(cleanAttachments);
 
     const anchorEl =
       unsupportedCardEl ||
@@ -4389,7 +4492,7 @@
       rowEl;
     const bubbleEl = anchorEl !== rowEl ? findOriginalBubbleElement(anchorEl, rowEl) : rowEl;
     const targetParent = bubbleEl || anchorEl.parentElement || anchorEl;
-    const serialized = JSON.stringify(cleanAttachments);
+    const serialized = JSON.stringify(renderUrls);
     let mediaContainer = targetParent.querySelector('.fb-unsend-unlocked-media');
     if (mediaContainer) {
       if (mediaContainer.dataset.fbRenderedMedia === serialized) return;
@@ -4401,8 +4504,8 @@
     }
 
     mediaContainer.dataset.fbRenderedMedia = serialized;
-    cleanAttachments.forEach((url) => {
-      mediaContainer.appendChild(createRestoredMediaElement(url, false));
+    renderUrls.forEach((url) => {
+      mediaContainer.appendChild(createRestoredMediaElement(url, false, posterUrl));
     });
 
     if (!targetParent.dataset.fbViewOnceClickBound) {
@@ -4528,10 +4631,11 @@
     }
 
     if (cleanAttachments.length > 0) {
+      const { renderUrls, posterUrl } = splitVideoPosterFromAttachments(cleanAttachments);
       const mediaContainer = document.createElement('div');
       mediaContainer.className = 'fb-unsend-media-list';
-      cleanAttachments.forEach((url) => {
-        mediaContainer.appendChild(createRestoredMediaElement(url, false));
+      renderUrls.forEach((url) => {
+        mediaContainer.appendChild(createRestoredMediaElement(url, false, posterUrl));
       });
       targetContainer.appendChild(mediaContainer);
     }
@@ -4593,10 +4697,11 @@
       }
 
       if (cleanAttachments.length > 0) {
+        const { renderUrls, posterUrl } = splitVideoPosterFromAttachments(cleanAttachments);
         const mediaContainer = document.createElement('div');
         mediaContainer.className = 'fb-unsend-media-list';
-        cleanAttachments.forEach((url) => {
-          mediaContainer.appendChild(createRestoredMediaElement(url, false));
+        renderUrls.forEach((url) => {
+          mediaContainer.appendChild(createRestoredMediaElement(url, false, posterUrl));
         });
         bubble.appendChild(mediaContainer);
       }
@@ -4747,10 +4852,11 @@
     toast.appendChild(body);
 
     if (cleanAtt.length > 0) {
+      const { renderUrls, posterUrl } = splitVideoPosterFromAttachments(cleanAtt);
       const thumbWrap = document.createElement('div');
       thumbWrap.className = 'fb-unsend-toast-thumbs';
-      cleanAtt.slice(0, 3).forEach((url) => {
-        thumbWrap.appendChild(createRestoredMediaElement(url, true));
+      renderUrls.slice(0, 3).forEach((url) => {
+        thumbWrap.appendChild(createRestoredMediaElement(url, true, posterUrl));
       });
       toast.appendChild(thumbWrap);
     }

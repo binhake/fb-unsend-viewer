@@ -869,12 +869,78 @@
       typeof u === 'string' &&
       (/(\.mp4|\.webm|\.mov|\.m4v|\.ogv)(\?|#|$)/i.test(u) ||
         /(videoclip|video_clip|\/t42\.|https?:\/\/video[a-z0-9.-]*\.fbcdn\.net|mime=video)/i.test(u));
+    const isAudioLikeUrl = (u) =>
+      typeof u === 'string' &&
+      (u.startsWith('data:audio/') ||
+        /(\.ogg|\.mp3|\.wav|\.m4a|\.aac|\.opus|\.flac)(\?|#|$)/i.test(u) ||
+        /(audioclip|audio_clip|voice_clip|\/t59\.3654-21\/|mime=audio)/i.test(u));
+
+    const extractMediaAssetKey = (u) => {
+      if (!u || typeof u !== 'string' || u.startsWith('data:')) return '';
+      const assetMatch = u.match(/\/(\d+_\d+_\d+_[a-z0-9]+)\.(jpg|jpeg|png|webp|gif|mp4|webm|mov|m4a|mp3|ogg)(?:$|\?|#)/i);
+      if (assetMatch) {
+        return `${assetMatch[1].toLowerCase()}.${assetMatch[2].toLowerCase()}`;
+      }
+      try {
+        const parsed = new URL(u);
+        return parsed.pathname.toLowerCase();
+      } catch (_) {
+        return u.split('?')[0].toLowerCase();
+      }
+    };
+
+    const getMediaUrlQualityScore = (u) => {
+      if (!u || typeof u !== 'string') return 0;
+      if (u.startsWith('data:')) return 900000 + Math.min(u.length, 99999);
+      const stpResizeMatch = u.match(/[?&]stp=[^&#]*?[ps](\d+)x(\d+)/i);
+      if (stpResizeMatch) {
+        return Math.max(Number(stpResizeMatch[1]) || 0, Number(stpResizeMatch[2]) || 0);
+      }
+      const pathResizeMatch = u.match(/\/[ps](\d+)x(\d+)\//i);
+      if (pathResizeMatch) {
+        return Math.max(Number(pathResizeMatch[1]) || 0, Number(pathResizeMatch[2]) || 0);
+      }
+      if (isVideoLikeUrl(u)) {
+        if (isDashStreamUrl(u)) return 500;
+        const efgMatch = u.match(/[?&]efg=([A-Za-z0-9%_+-]+)/i);
+        if (efgMatch) {
+          try {
+            const decoded = atob(decodeURIComponent(efgMatch[1]));
+            if (/1080|hd|high/i.test(decoded)) return 1001080;
+            if (/720/i.test(decoded)) return 1000720;
+            if (/480|360|sd/i.test(decoded)) return 999480;
+          } catch (_) {}
+        }
+      }
+      return 1000000;
+    };
+
+    const deduplicateHighestQualityUrls = (urls) => {
+      if (!Array.isArray(urls) || urls.length <= 1) return Array.isArray(urls) ? urls : [];
+      const bestByKey = new Map();
+      const orderKeys = [];
+      for (const u of urls) {
+        if (!u || typeof u !== 'string') continue;
+        const isImgOrVid = !isAudioLikeUrl(u);
+        const key = isImgOrVid ? extractMediaAssetKey(u) || u : u;
+        const score = getMediaUrlQualityScore(u);
+        if (!bestByKey.has(key)) {
+          bestByKey.set(key, { url: u, score });
+          orderKeys.push(key);
+        } else if (score > bestByKey.get(key).score) {
+          bestByKey.set(key, { url: u, score });
+        }
+      }
+      return orderKeys.map((k) => bestByKey.get(k).url);
+    };
 
     const cleanAttachments = Array.isArray(attachments)
-      ? attachments
-          .map(unvaultString)
-          .map((u) => (isDashMpdXmlString(u) ? extractDashMpdVideoUrl(u) : u))
-          .filter((u) => u && !isVaultToken(u) && !isDashMpdXmlString(u))
+      ? deduplicateHighestQualityUrls(
+          attachments
+            .map(unvaultString)
+            .map((u) => (isDashMpdXmlString(u) ? extractDashMpdVideoUrl(u) : u))
+            .filter((u) => u && !isVaultToken(u) && !isDashMpdXmlString(u))
+        )
       : [];
     if (
       unvaultedText &&
@@ -957,9 +1023,11 @@
     const hasProgressiveVideo = rawMergedAttachments.some(
       (u) => isVideoLikeUrl(u) && !isDashStreamUrl(u)
     );
-    const mergedAttachments = hasProgressiveVideo
-      ? rawMergedAttachments.filter((u) => !isDashStreamUrl(u))
-      : rawMergedAttachments;
+    const mergedAttachments = deduplicateHighestQualityUrls(
+      hasProgressiveVideo
+        ? rawMergedAttachments.filter((u) => !isDashStreamUrl(u))
+        : rawMergedAttachments
+    );
 
     const finalSenderId = String(
       senderId || existing?.senderId || (isSelf === false ? e2eeIds.peerUserId : '') || ''
@@ -2790,23 +2858,41 @@
             const attList = obj.attachments || obj.blobAttachments || obj.media || [];
             if (Array.isArray(attList)) {
               for (const att of attList) {
-                const url =
-                  att?.playableUrl ||
-                  att?.audioUrl ||
-                  att?.videoUrl ||
-                  att?.hdUrl ||
-                  att?.sdUrl ||
-                  att?.url ||
-                  att?.previewUrl ||
-                  att?.imageUrl ||
-                  att?.largePreviewUrl;
-                if (url && typeof url === 'string') attachments.push(unvaultString(url));
+                const candidates = [
+                  att?.hdUrl,
+                  att?.browser_native_hd_url,
+                  att?.playableUrl,
+                  att?.videoUrl,
+                  att?.audioUrl,
+                  att?.largePreviewUrl,
+                  att?.imageUrl,
+                  att?.url,
+                  att?.sdUrl,
+                  att?.browser_native_sd_url,
+                  att?.previewUrl
+                ];
+                for (const cUrl of candidates) {
+                  if (cUrl && typeof cUrl === 'string') {
+                    attachments.push(unvaultString(cUrl));
+                  }
+                }
               }
             }
-            const directPlayable =
-              obj.playableUrl || obj.audioUrl || obj.videoUrl || obj.hdUrl || obj.sdUrl;
-            if (typeof directPlayable === 'string') {
-              attachments.push(unvaultString(directPlayable));
+            const directPlayableCandidates = [
+              obj.hdUrl,
+              obj.browser_native_hd_url,
+              obj.playableUrl,
+              obj.videoUrl,
+              obj.audioUrl,
+              obj.largePreviewUrl,
+              obj.imageUrl,
+              obj.sdUrl,
+              obj.browser_native_sd_url
+            ];
+            for (const dUrl of directPlayableCandidates) {
+              if (typeof dUrl === 'string' && dUrl) {
+                attachments.push(unvaultString(dUrl));
+              }
             }
 
             if (cleanText || attachments.length > 0) {
