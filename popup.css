@@ -248,10 +248,12 @@ button {
 }
 
 .brand-text h1 {
+  overflow: hidden;
   font-size: 18px;
   font-weight: 700;
   line-height: 1.25;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .brand-status {
@@ -287,6 +289,22 @@ button {
   align-items: center;
   gap: 6px;
   flex: none;
+}
+
+/* Thanh bên bị kéo hẹp: thu nhỏ nút để nhường chỗ cho tiêu đề */
+@media (max-width: 380px) {
+  .app-header {
+    gap: 8px;
+  }
+
+  .header-actions {
+    gap: 4px;
+  }
+
+  .header-actions .icon-btn {
+    width: 30px;
+    height: 30px;
+  }
 }
 
 /* Nút tròn xám giống nút trên thanh header của Facebook */
