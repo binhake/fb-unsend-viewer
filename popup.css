@@ -713,6 +713,7 @@ button {
 .scroll-area {
   flex: 1;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
@@ -800,7 +801,8 @@ button {
   flex: 1;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  /* Tên đoạn chat tối đa 60% dòng, phần còn lại cho "Sau tin"; dài quá thì hiện … */
+  grid-template-columns: fit-content(60%) minmax(0, 1fr);
   grid-template-areas:
     'head head'
     'thread anchor'
@@ -876,6 +878,7 @@ button {
 
 .msg-thread,
 .msg-anchor {
+  overflow: hidden;
   display: flex;
   align-items: center;
   gap: 5px;
