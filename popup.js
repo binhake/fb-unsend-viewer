@@ -2087,8 +2087,116 @@ function checkUpdateFromPopup(manual = false) {
   });
 }
 
+// ── Thanh bên (Side Panel) ──
+// Popup và thanh bên dùng chung popup.html; trang không nằm trong danh sách popup thì là thanh bên
+function isOpenedAsPopup() {
+  try {
+    return chrome.extension.getViews({ type: 'popup' }).includes(window);
+  } catch (_) {
+    return true;
+  }
+}
+
+function setupSidePanel() {
+  if (!isOpenedAsPopup()) {
+    document.documentElement.classList.add('is-panel');
+    // Ghi lại thanh bên thuộc cửa sổ nào để popup nhận ra (popup đọc qua chrome.extension.getViews)
+    chrome.windows.getCurrent(function (win) {
+      window.panelWindowId = win ? win.id : null;
+    });
+    return;
+  }
+  if (!chrome.sidePanel || typeof chrome.sidePanel.open !== 'function') return;
+
+  // Lấy sẵn windowId: sidePanel.open phải gọi ngay trong lúc bấm, không chờ callback
+  let currentWindowId = null;
+  chrome.windows.getCurrent(function (win) {
+    currentWindowId = win ? win.id : null;
+    dom.panelBtn.hidden = currentWindowId === null;
+    if (currentWindowId !== null) watchSidePanel(currentWindowId);
+  });
+
+  dom.panelBtn.addEventListener('click', function () {
+    if (currentWindowId === null) return;
+    chrome.sidePanel
+      .open({ windowId: currentWindowId })
+      .then(function () {
+        window.close();
+      })
+      .catch(function () {
+        showStatus('Trình duyệt chưa hỗ trợ thanh bên', true);
+      });
+  });
+}
+
+// Thanh bên của cửa sổ này đang mở thì popup chỉ hiện lời nhắc, đóng thanh bên thì hiện lại giao diện
+function watchSidePanel(windowId) {
+  const panelNotice = document.getElementById('panel-notice');
+  const panelCloseBtn = document.getElementById('panel-close-btn');
+  const panelStayBtn = document.getElementById('panel-stay-btn');
+  let stayHere = false;
+
+  function setNotice(isPanelOpen) {
+    const showNotice = isPanelOpen && !stayHere;
+    document.documentElement.classList.toggle('panel-elsewhere', showNotice);
+    panelNotice.hidden = !showNotice;
+  }
+
+  function isPanelViewOpen() {
+    try {
+      return chrome.extension.getViews().some(function (view) {
+        return view !== window && view.panelWindowId === windowId;
+      });
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function checkSidePanel() {
+    if (isPanelViewOpen()) {
+      setNotice(true);
+      return;
+    }
+    if (!chrome.runtime.getContexts) {
+      setNotice(false);
+      return;
+    }
+    // Dự phòng: một số bản Chrome không gắn windowId cho thanh bên (-1) nên không lọc theo cửa sổ ở đây
+    chrome.runtime
+      .getContexts({ contextTypes: ['SIDE_PANEL'] })
+      .then(function (contexts) {
+        setNotice(
+          contexts.some(function (ctx) {
+            return ctx.windowId === windowId || !(ctx.windowId >= 0);
+          })
+        );
+      })
+      .catch(function () {
+        setNotice(false);
+      });
+  }
+
+  // sidePanel.close có từ Chrome 141, bản cũ hơn thì ẩn nút
+  panelCloseBtn.hidden = typeof chrome.sidePanel.close !== 'function';
+  panelCloseBtn.addEventListener('click', function () {
+    chrome.sidePanel.close({ windowId: windowId }).then(checkSidePanel).catch(function () {});
+  });
+  // Nút "Vẫn xem ở đây" đang tạm ẩn trong popup.html
+  if (panelStayBtn) {
+    panelStayBtn.addEventListener('click', function () {
+      stayHere = true;
+      setNotice(false);
+    });
+  }
+
+  checkSidePanel();
+  setInterval(checkSidePanel, 1000);
+}
+
 function init() {
   cacheDom();
+  dom.panelBtn = document.getElementById('panel-btn');
+  setupSidePanel();
   try {
     dom.versionTag.textContent = `v${chrome.runtime.getManifest().version}`;
   } catch (_) {}

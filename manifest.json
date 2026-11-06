@@ -13,13 +13,17 @@
   },
   "permissions": [
     "storage",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "sidePanel"
   ],
   "host_permissions": [
     "*://*.facebook.com/*",
     "*://*.fbcdn.net/*",
     "*://*.fbsbx.com/*"
   ],
+  "side_panel": {
+    "default_path": "popup.html"
+  },
   "background": {
     "service_worker": "background.js"
   },

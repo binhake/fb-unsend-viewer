@@ -28,11 +28,25 @@
     <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.5v.01"/></symbol>
     <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/></symbol>
     <symbol id="i-coffee" viewBox="0 0 24 24"><path d="M5 9h11v5a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5z"/><path d="M16 10h1.5a2.5 2.5 0 0 1 0 5H16"/><path d="M9 3.5v2.5"/><path d="M12.5 3.5v2.5"/></symbol>
+    <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M14.5 4.5v15"/></symbol>
     <symbol id="i-bell-off"viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/><path d="M3.5 3.5l17 17"/></symbol>
     <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M3.5 13.5h4.5l1.5 2.5h5l1.5-2.5h4.5"/><path d="M6.2 5h11.6l2.7 8.5V19a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1v-5.5z"/></symbol>
     <symbol id="i-bug" viewBox="0 0 24 24"><rect x="8" y="9" width="8" height="10" rx="4"/><path d="M10 9V7a2 2 0 1 1 4 0v2"/><path d="M12 13v6"/><path d="M4 13h4"/><path d="M16 13h4"/><path d="m5 8 3.2 2.2"/><path d="m19 8-3.2 2.2"/><path d="m5 19 3.2-2.2"/><path d="m19 19-3.2-2.2"/></symbol>
     <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M5 20h14"/></symbol>
   </svg>
+
+  <!-- ===== Màn hình chờ: danh sách đang mở ở thanh bên ===== -->
+  <div id="panel-notice" class="panel-notice" hidden>
+    <div class="empty-icon">
+      <svg class="icon"><use href="#i-sidebar"/></svg>
+    </div>
+    <h2 class="empty-title">Đang mở ở thanh bên</h2>
+    <p class="empty-desc">Danh sách tin nhắn đã gỡ đang hiển thị ở thanh bên của trình duyệt. Đóng thanh bên nếu bạn muốn xem lại tại đây.</p>
+    <div class="panel-notice-actions">
+      <button type="button" id="panel-close-btn" class="btn btn-primary" hidden>Đóng thanh bên</button>
+      <!-- <button type="button" id="panel-stay-btn" class="btn">Vẫn xem ở đây</button> -->
+    </div>
+  </div>
 
   <div class="app">
     <!-- ===== Header ===== -->
@@ -55,6 +69,10 @@
       </div>
 
       <div class="header-actions">
+        <!-- Mở danh sách ở thanh bên của trình duyệt (cao hết màn hình) -->
+        <button type="button" id="panel-btn" class="icon-btn" title="Mở ở thanh bên: cao hết màn hình, xem song song với Facebook" aria-label="Mở ở thanh bên" hidden>
+          <svg class="icon"><use href="#i-sidebar"/></svg>
+        </button>
         <!-- Công tắc bật/tắt thông báo ở góc màn hình Facebook -->
         <label class="icon-btn toggle-btn" title="Bật/tắt thông báo ở góc màn hình Facebook khi có tin bị gỡ">
           <input type="checkbox" id="toast-toggle" class="toggle-input" aria-label="Thông báo ở góc màn hình" checked>

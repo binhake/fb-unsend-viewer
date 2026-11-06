@@ -68,6 +68,54 @@ body {
   height: 600px;
 }
 
+/* Mở ở thanh bên: giãn theo kích thước cột thay vì cố định như popup */
+html.is-panel,
+html.is-panel body {
+  width: 100%;
+  height: 100vh;
+}
+
+/* Thanh bên đang mở: popup thu nhỏ, chỉ hiện lời nhắc */
+html.panel-elsewhere,
+html.panel-elsewhere body {
+  width: 320px;
+  height: auto;
+}
+
+html.panel-elsewhere .app {
+  display: none;
+}
+
+.panel-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 28px 24px 22px;
+  text-align: center;
+}
+
+.panel-notice[hidden] {
+  display: none;
+}
+
+.panel-notice-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin-top: 16px;
+}
+
+.panel-notice-actions .btn {
+  flex: none;
+}
+
+.panel-notice-actions .btn-primary {
+  background: var(--accent);
+  color: #ffffff;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -530,10 +578,13 @@ button {
 .filter-tabs {
   display: flex;
   gap: 6px;
+  /* Thanh bên kéo hẹp thì vuốt ngang để xem hết tab */
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
 .tab-btn {
-  flex: 1;
+  flex: 1 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
